@@ -26,6 +26,7 @@ extern "C" {
 #include <arpa/inet.h>
 
 #define POKEMON_UNUSED(x) (void)x
+#define POKEMON_DEBUG_MESSAGES 1
 
 namespace
 {
@@ -458,8 +459,8 @@ struct DebuggerState {
     BufferPtr m_LuaStepFilePathBuffer;
     int m_LastLine;
     int m_Level;
-    int m_LastLevel;
-    std::vector<std::string> m_Stack;
+
+//    std::vector<std::string> m_Stack;
 
     struct LuaReference {
         unsigned char Type;
@@ -524,13 +525,12 @@ struct DebuggerState {
         m_Frame = -1;
         m_LastLine = -1;
         m_Level = 0;
-        m_LastLevel = 0;
         OutputSequence = 0;
         m_NextBreakpointId = 0;
         m_Step.store(-1 << Step_Count_Shift | Step_Count);
     }
 public:
-    void Init() { m_LastLine = -1; m_Level = 0; m_LastLevel = 0; lua_sethook(L, LuaHook, LUA_HOOKCALL | LUA_HOOKCOUNT | LUA_HOOKLINE | LUA_HOOKRET | LUA_HOOKTAILRET, 1); }
+    void Init() { m_LastLine = -1; m_Level = 0; lua_sethook(L, LuaHook, LUA_HOOKCALL | LUA_HOOKCOUNT | LUA_HOOKLINE | LUA_HOOKRET | LUA_HOOKTAILRET, 1); }
     void Uninit() { lua_sethook(L, LuaHook, 0, 0); }
     void Connect();
     void Disconnect();
@@ -1168,7 +1168,6 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
     }
 
     if (stop) {
-        m_LastLevel = m_Level;
         BufferPtr event(MakeV8ResponseResponseHeader());
         if (event) {
 
@@ -1356,52 +1355,58 @@ DebuggerState::WriteRefs(buffer* response) {
 bool
 DebuggerState::WriteValue(buffer* response, int handle) {
     auto it = m_Values.find(handle);
-    assert(it != m_Values.end());
-    const auto& value = it->second;
-    assert(handle == value.Handle);
+    if (it == m_Values.end()) {
+        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+            return false;
+        }
+    } else {
+        assert(it != m_Values.end());
+        const auto& value = it->second;
+        assert(handle == value.Handle);
 
-    switch (value.Type) {
-    default:
-        assert(false);
-        return false;
-        break;
-    case LUA_TNIL: {
-        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"null\"}", value.Handle)) {
+        switch (value.Type) {
+        default:
+            assert(false);
             return false;
-        }
-    } break;
-    case LUA_TBOOLEAN: {
-        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"boolean\",\"value\":%s}", value.Handle, value.Data.Number > 0 ? "true" : "false")) {
-            return false;
-        }
-    } break;
-    case LUA_TNUMBER: {
-        const lua_Number& n = value.Data.Number;
-        if (n != n) { // nan?
-            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"NaN\"}", value.Handle)) {
+            break;
+        case LUA_TNIL: {
+            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"null\"}", value.Handle)) {
                 return false;
             }
-        } else {
-            if (n == std::numeric_limits<lua_Number>::infinity()) {
-                if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"inf\"}", value.Handle)) {
+        } break;
+        case LUA_TBOOLEAN: {
+            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"boolean\",\"value\":%s}", value.Handle, value.Data.Number > 0 ? "true" : "false")) {
+                return false;
+            }
+        } break;
+        case LUA_TNUMBER: {
+            const lua_Number& n = value.Data.Number;
+            if (n != n) { // nan?
+                if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"NaN\"}", value.Handle)) {
                     return false;
                 }
             } else {
-                if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"number\",\"value\":%f}", value.Handle, n)) {
-                    return false;
+                if (n == std::numeric_limits<lua_Number>::infinity()) {
+                    if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"inf\"}", value.Handle)) {
+                        return false;
+                    }
+                } else {
+                    if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"number\",\"value\":%f}", value.Handle, n)) {
+                        return false;
+                    }
                 }
             }
+        } break;
+        case LUA_TSTRING: {
+            // buf_used returns 0, wtf?
+            if (!GetJsonString((const char*)value.Data.String->beg, strlen((char*)value.Data.String->beg))) {
+                return false;
+            }
+            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"%s\"}", value.Handle, m_JsonString->beg)) {
+                return false;
+            }
+        } break;
         }
-    } break;
-    case LUA_TSTRING: {
-        // buf_used returns 0, wtf?
-        if (!GetJsonString((const char*)value.Data.String->beg, strlen((char*)value.Data.String->beg))) {
-            return false;
-        }
-        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"string\",\"value\":\"%s\"}", value.Handle, m_JsonString->beg)) {
-            return false;
-        }
-    } break;
     }
 
     return true;
@@ -1414,122 +1419,129 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
 
     lua_rawgeti(L, handleTableIndex, HandleToLuaIndex(handle));
     const int typeOnStack = lua_type(L, -1);
-    auto ptr = lua_topointer(L, -1);
-    assert(ptr);
-    LuaPopGuard g(L, 1);
-    const int index = lua_gettop(L);
-    auto it = m_References.find(ptr);
-    assert(it != m_References.end());
-    auto& reference = it->second;
-    assert(reference.Type == typeOnStack);
-    switch (reference.Type) {
-    default:
-        assert(false);
-        return false;
-        break;
-    case LUA_TFUNCTION:
-    case LUA_TTABLE:
-    case LUA_TUSERDATA:
-    case LUA_TTHREAD:
-    case LUA_TLIGHTUSERDATA: {
+    if (typeOnStack == LUA_TNIL) {
+        lua_pop(L, 1);
+        if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+            return false;
+        }
+    } else {
+        auto ptr = lua_topointer(L, -1);
+        assert(ptr);
+        LuaPopGuard g(L, 1);
+        const int index = lua_gettop(L);
+        auto it = m_References.find(ptr);
+        assert(it != m_References.end());
+        auto& reference = it->second;
+        assert(reference.Type == typeOnStack);
         switch (reference.Type) {
-        case LUA_TFUNCTION:
-            if (!GetJsonString(reference.Name.c_str(), reference.Name.length())) {
-                return false;
-            }
-            if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"}", reference.Handle, m_JsonString->beg)) {
-                return false;
-            }
+        default:
+            assert(false);
+            return false;
             break;
-        default: {
-            const bool hasMetatable = reference.MetatableHandle >= GlobalTableHandle;
-            if (!WriteRaw(buf,
-"{\"handle\":%d,\"type\":\"object\",\"className\":\"%p <%d items>\",\"properties\":[",
-                          reference.Handle,
-                          ptr,
-                          (int)(reference.SubHandles.size() + hasMetatable))) {
-                return false;
-            }
-            bool firstMember = true;
-            if (hasMetatable) {
-                m_HandlesToExpose.push_back(reference.MetatableHandle);
-
-                firstMember = false;
-                if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"metatable\"}", reference.MetatableHandle)) {
+        case LUA_TFUNCTION:
+        case LUA_TTABLE:
+        case LUA_TUSERDATA:
+        case LUA_TTHREAD:
+        case LUA_TLIGHTUSERDATA: {
+            switch (reference.Type) {
+            case LUA_TFUNCTION:
+                if (!GetJsonString(reference.Name.c_str(), reference.Name.length())) {
                     return false;
                 }
-            }
-            switch (reference.Type) {
-            case LUA_TUSERDATA:
-            case LUA_TTHREAD:
-            case LUA_TLIGHTUSERDATA:
-                break; // fix me
-            case LUA_TTABLE: {
-                assert(!lua_rawequal(L, index, handleTableIndex));
-                lua_pushnil(L);  /* first key */
-                //size_t subHandleIndex = 0;
-                size_t counted = 0;
-                while (lua_next(L, index) != 0) {
-                    //int subhandle = reference.SubHandles[subHandleIndex];
-                    lua_pushvalue(L, -2);
-                    size_t len;
-                    const char* key = lua_tolstring(L, -1, &len);
-                    if (handle == GlobalTableHandle && strcmp(POKEMONTABLE, key) == 0) {
-                        lua_pop(L, 2);
-                        continue;
-                    }
-                    std::string stdKey(key, key + len);
-                    auto keyIt = reference.SubHandles.find(stdKey);
-                    assert(keyIt != reference.SubHandles.end());
-                    int subhandle = keyIt->second;
-                    if (!GetJsonString(key, len)) {
-                        lua_pop(L, 3);
+                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"}", reference.Handle, m_JsonString->beg)) {
+                    return false;
+                }
+                break;
+            default: {
+                const bool hasMetatable = reference.MetatableHandle >= GlobalTableHandle;
+                if (!WriteRaw(buf,
+    "{\"handle\":%d,\"type\":\"object\",\"className\":\"%p <%d items>\",\"properties\":[",
+                              reference.Handle,
+                              ptr,
+                              (int)(reference.SubHandles.size() + hasMetatable))) {
+                    return false;
+                }
+                bool firstMember = true;
+                if (hasMetatable) {
+                    m_HandlesToExpose.push_back(reference.MetatableHandle);
+
+                    firstMember = false;
+                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"metatable\"}", reference.MetatableHandle)) {
                         return false;
                     }
-                    lua_pop(L, 1); // name copy
-                    assert(counted < reference.SubHandles.size());
-                    if (!firstMember) {
-                        if (!WriteRaw(buf, ",")) {
+                }
+                switch (reference.Type) {
+                case LUA_TUSERDATA:
+                case LUA_TTHREAD:
+                case LUA_TLIGHTUSERDATA:
+                    break; // fix me
+                case LUA_TTABLE: {
+                    assert(!lua_rawequal(L, index, handleTableIndex));
+                    lua_pushnil(L);  /* first key */
+                    //size_t subHandleIndex = 0;
+                    size_t counted = 0;
+                    while (lua_next(L, index) != 0) {
+                        //int subhandle = reference.SubHandles[subHandleIndex];
+                        lua_pushvalue(L, -2);
+                        size_t len;
+                        const char* key = lua_tolstring(L, -1, &len);
+                        if (handle == GlobalTableHandle && strcmp(POKEMONTABLE, key) == 0) {
+                            lua_pop(L, 2);
+                            continue;
+                        }
+                        std::string stdKey(key, key + len);
+                        auto keyIt = reference.SubHandles.find(stdKey);
+                        assert(keyIt != reference.SubHandles.end());
+                        int subhandle = keyIt->second;
+                        if (!GetJsonString(key, len)) {
+                            lua_pop(L, 3);
+                            return false;
+                        }
+                        lua_pop(L, 1); // name copy
+                        assert(counted < reference.SubHandles.size());
+                        if (!firstMember) {
+                            if (!WriteRaw(buf, ",")) {
+                                lua_pop(L, 2);
+                                return false;
+                            }
+                        }
+
+                        if (subhandle == 0) {
+                            subhandle = m_NextValueHandle++;
+                            assert(IsValueHandle(subhandle));
+                            m_Values.insert(std::make_pair(std::move(subhandle), std::move(LuaValue::fromStack(L, -1, subhandle))));
+                            //reference.SubHandles[subHandleIndex] = subhandle;
+                            keyIt->second = subhandle;
+                            //fprintf(stderr, "Assign %d for value subhandle in table %d, key %s\n", subhandle, handle, stdKey.c_str());
+                        }
+
+                        // FIXME: is there a way to not always expose evertying?
+                        m_HandlesToExpose.push_back(subhandle);
+
+                        assert(subhandle > 0);
+
+                        if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", subhandle, m_JsonString->beg)) {
                             lua_pop(L, 2);
                             return false;
                         }
+
+                        //++subHandleIndex;
+                        firstMember = false;
+                        ++counted;
+                        lua_pop(L, 1); // value;
                     }
-
-                    if (subhandle == 0) {
-                        subhandle = m_NextValueHandle++;
-                        assert(IsValueHandle(subhandle));
-                        m_Values.insert(std::make_pair(std::move(subhandle), std::move(LuaValue::fromStack(L, -1, subhandle))));
-                        //reference.SubHandles[subHandleIndex] = subhandle;
-                        keyIt->second = subhandle;
-                        fprintf(stderr, "Assign %d for value subhandle in table %d, key %s\n", subhandle, handle, stdKey.c_str());
-                    }
-
-                    // FIXME: is there a way to not always expose evertying?
-                    m_HandlesToExpose.push_back(subhandle);
-
-                    assert(subhandle > 0);
-
-                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", subhandle, m_JsonString->beg)) {
-                        lua_pop(L, 2);
-                        return false;
-                    }
-
-                    //++subHandleIndex;
-                    firstMember = false;
-                    ++counted;
-                    lua_pop(L, 1); // value;
+                    assert(counted == reference.SubHandles.size());
+                } break;
                 }
-                assert(counted == reference.SubHandles.size());
+                if (!WriteRaw(buf, "]}")) {
+                    return false;
+                }
             } break;
             }
-            if (!WriteRaw(buf, "]}")) {
-                return false;
-            }
-        } break;
-        }
 
-    } break;
-    } // switch (type)
+        } break;
+        } // switch (type)
+    } // type != LUA_TNIL
 
     return true;
 }
@@ -1801,7 +1813,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
                 name = cArgBuffer;
             }
 
-            fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
+            //fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
 
             int handle;
             auto ptr = lua_topointer(L, -1);
@@ -1827,7 +1839,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
             }
         }
 
-        fflush(stderr);
+        //fflush(stderr);
 
         if (!WriteRaw(response, "]},\"refs\":[")) {
             return false;
@@ -1858,7 +1870,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
             assert(name);
             LuaPopGuard g(L, 1);
 
-            fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
+            //fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
 
             int handle;
             auto ptr = lua_topointer(L, -1);
@@ -1885,7 +1897,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
 
         }
 
-        fflush(stderr);
+        //fflush(stderr);
 
         if (!WriteRaw(response, "]},\"refs\":[")) {
             return false;
@@ -2036,6 +2048,12 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
             }
         }
 
+        lua_getglobal(L, "_G");
+        GetPokemonTable(L, Pokemon_Handles);
+        const int handleTableIndex = lua_gettop(L);
+        const int globalTableIndex = handleTableIndex-1;
+        LuaPopGuard metatableGuard(L, 2);
+
         BufferPtr filePathBuffer;
         lua_Debug dbg;
         if (lua_getstack(L, frame, &dbg)) {
@@ -2046,9 +2064,10 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
             assert(lua_isfunction(L, -1));
             auto ptr = lua_topointer(L, -1);
             assert(ptr);
-            auto it = m_References.find(ptr);
-            assert(it != m_References.end());
-            int functionHandle = it->second.Handle;
+            assert(m_References.count(ptr));
+            // This call can come directly in response to a breakpoint being hit
+            // thus we need to mno
+            int functionHandle = Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, NULL, 0);
             m_HandlesToExpose.push_back(functionHandle);
             lua_pop(L, 1);
 
@@ -2421,6 +2440,7 @@ ProcessSend() {
             if (s_SendQueue.size() > 0) {
                 s_SendBuffer = s_SendQueue.front();
                 s_SendQueue.pop_front();
+#if POKEMON_DEBUG_MESSAGES
                 fprintf(stderr, "Send\n");
                 for (unsigned char* p = s_SendBuffer->beg; p != s_SendBuffer->end; ++p) {
                     fprintf(stderr, "%02x", *p);
@@ -2431,6 +2451,7 @@ ProcessSend() {
                 }
                 fprintf(stderr, "\n");
                 fflush(stderr);
+#endif
             } else {
                 break;
             }
@@ -2740,6 +2761,7 @@ ProcessReceive() {
     while (true) {
         if (s_Packetsize) {
             if (buf_used(s_ReceiveBuffer) == s_Packetsize) {
+#if POKEMON_DEBUG_MESSAGES
                 fprintf(stderr, "Receive\n");
                 for (unsigned char* p = s_ReceiveBuffer->beg; p != s_ReceiveBuffer->end; ++p) {
                     fprintf(stderr, "%02x", *p);
@@ -2750,7 +2772,7 @@ ProcessReceive() {
                 }
                 fprintf(stderr, "\n");
                 fflush(stderr);
-
+#endif
                 unsigned char* p = s_ReceiveBuffer->beg;
                 uint32_t bytes;
 
