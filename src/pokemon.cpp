@@ -47,12 +47,6 @@ enum {
     Pokemon_Count = Pokemon_Handles
 };
 
-enum {
-    Function_Owner = 1,
-    Function_Handle,
-    Function_Name
-};
-
 inline
 void
 GetPokemonTable(lua_State* L, int id) {
@@ -1658,7 +1652,7 @@ DebuggerState::ProcessLookup(buffer* response, int64_t seq, json_value* args) {
     json_value* handles;
     if (!args ||
         (handles = GetKey(args, "handles")) == NULL ||
-        !handles->type == json_array) {
+        handles->type != json_array) {
         return WritePayload(response,
     "{\"seq\":%" PRId64 ",\"type\":\"response\",\"request_seq\":%" PRId64 ","
     "\"command\":\"lookup\",\"success\":false,\"running\":false}",
@@ -3206,8 +3200,7 @@ luaD_push_location(lua_State* L, const char* filePath, int line) {
         lua_pop(L, 1);
 
         // push value
-        int chars = sprintf((char*)str->beg, "%d:%s", line, filePath);
-        buf_free(str);
+        const int chars = sprintf((char*)str->beg, "%d:%s", line, filePath);
 
         // set entry
         lua_pushlstring(L, (char*)str->beg, chars);
@@ -3220,6 +3213,9 @@ luaD_push_location(lua_State* L, const char* filePath, int line) {
         // pop table
         lua_pop(L, 1);
         it->second->Unlock();
+
+        // free string
+        buf_free(str);
     }
     return error;
 }
