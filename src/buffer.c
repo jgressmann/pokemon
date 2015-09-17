@@ -129,7 +129,7 @@ buf_grow(buffer* buf, size_t bytes)
 
     oldUsed = buf_used(buf);
     oldSize = buf->cap - buf->beg;
-    newSize = Max((oldSize * 168) / 100, Max(bytes, sizeof(void*)));
+    newSize = Max((oldSize * 168) / 100, bytes);
     buf->beg = realloc(buf->beg, newSize);
     if (!buf->beg) {
         buf->cap = NULL;
