@@ -224,9 +224,10 @@ Get(json_value* obj, const char* key, int64_t& result) {
 //    return false;
 //}
 
+template<typename T>
 static
 bool
-Get(json_value* obj, const char* key, const char*& ptr, size_t& len) {
+Get(json_value* obj, const char* key,  T*& ptr, size_t& len) {
     auto value = GetKey(obj, key);
     if (value && value->type == json_string) {
         ptr = value->u.string.ptr;
@@ -670,6 +671,9 @@ DebuggerState::LuaValue::fromStack(lua_State* L, int index, int handle) {
 
 int
 DebuggerState::GetThis(lua_Debug& dbg) {
+    return -1;
+
+
     const bool isC = strcmp("C", dbg.what) == 0;
     if (isC) {
         return -1;
@@ -1442,17 +1446,24 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                 if (!GetJsonString(reference.Name.c_str(), reference.Name.length())) {
                     return false;
                 }
-                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"}", reference.Handle, m_JsonString->beg)) {
+                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\",\"className\":\"Function\"}", reference.Handle, m_JsonString->beg)) {
                     return false;
                 }
                 break;
             default: {
                 const bool hasMetatable = reference.MetatableHandle >= GlobalTableHandle;
+                /*
                 if (!WriteRaw(buf,
     "{\"handle\":%d,\"type\":\"object\",\"className\":\"%p <%d items>\",\"properties\":[",
                               reference.Handle,
                               ptr,
                               (int)(reference.SubHandles.size() + hasMetatable))) {
+                    return false;
+                }
+                */
+                if (!WriteRaw(buf,
+    "{\"handle\":%d,\"type\":\"object\",\"properties\":[",
+                              reference.Handle)) {
                     return false;
                 }
                 bool firstMember = true;
@@ -1464,6 +1475,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                         return false;
                     }
                 }
+                const char* className = "Object";
                 switch (reference.Type) {
                 case LUA_TUSERDATA:
                 case LUA_TTHREAD:
@@ -1474,8 +1486,12 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                     lua_pushnil(L);  /* first key */
                     //size_t subHandleIndex = 0;
                     size_t counted = 0;
+                    bool isArray = !hasMetatable && handle != GlobalTableHandle;
+                    int arrayIndex = 1;
                     while (lua_next(L, index) != 0) {
                         //int subhandle = reference.SubHandles[subHandleIndex];
+                        const int valueType = lua_type(L, -1);
+                        (void)valueType;
                         lua_pushvalue(L, -2);
                         size_t len;
                         const char* key = lua_tolstring(L, -1, &len);
@@ -1519,20 +1535,33 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                             return false;
                         }
 
+
+
+                        // array?
+                        if (isArray) {
+                            lua_rawgeti(L, index, arrayIndex++);
+                            const int indexedValueType = lua_type(L, -1);
+                            (void)indexedValueType;
+                            isArray = lua_rawequal(L, -1, -2) != 0;
+                            lua_pop(L, 1);
+                        }
+
                         //++subHandleIndex;
                         firstMember = false;
                         ++counted;
                         lua_pop(L, 1); // value;
                     }
                     assert(counted == reference.SubHandles.size());
+                    if (isArray) {
+                        className = "Array";
+                    }
                 } break;
                 }
-                if (!WriteRaw(buf, "]}")) {
+                if (!WriteRaw(buf, "],\"className\":\"%s\"}", className)) {
                     return false;
                 }
             } break;
             }
-
         } break;
         } // switch (type)
     } // type != LUA_TNIL
@@ -1796,6 +1825,8 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
             }
         }
 
+
+
         int cArgs = 0;
         char cArgBuffer[32];
         for (int j = 1; j <= locals; ++j) {
@@ -1832,6 +1863,18 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
                 return false;
             }
         }
+
+        /*
+        if (locals) {
+            if (!WriteRaw(response, ",")) {
+                return false;
+            }
+        }
+        if (!WriteRaw(response, "{\"name\":\"%s\",\"ref\":%d}", "_G", GlobalTableHandle)) {
+            return false;
+        }
+        m_HandlesToExpose.emplace_back(GlobalTableHandle);
+        */
 
         //fflush(stderr);
 
@@ -1956,7 +1999,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
 bool
 DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) {
     int64_t frame;
-    const char* expression;
+    char* expression;
     size_t len;
     if (Running ||
         !args ||
@@ -1970,13 +2013,6 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                    OutputSequence++, seq);
     }
 
-    lua_Debug dbg;
-    if (!lua_getstack(L, frame, &dbg) ||
-        !lua_getinfo(L, "lnSu", &dbg)) {
-            return false;
-    }
-
-
     const size_t offset = buf_used(response);
 
     if (!Write4Net(response, 0) || // sizeof following string
@@ -1987,25 +2023,162 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
         return false;
     }
 
+    BufferPtr newExpression(buf_alloc(len + 32));
+    if (!newExpression) {
+        return false;
+    }
+
+    char* equal = (char*)strchr(expression, '=');
+
+    if (equal) {
+        // chop ;
+        expression[--len] = 0;
+        char* value = equal + 1;
+        while (isspace(*value)) ++value;
+        do {
+            *equal-- = 0;
+        } while (isspace(*equal));
+
+        char* point = strchr(expression, '.');
+        if (point) {
+            *point = 0;
+            bool found = false;
+            lua_Debug dbg;
+            const char* name = NULL;
+
+            for (int frame = 0; !found && lua_getstack(L, frame, &dbg); ++frame) {
+                for (int j = 1; !found && (name = lua_getlocal(L, &dbg, j)) != NULL; ++j) {
+                    assert(name);
+
+                    if (strcmp(name, expression) == 0) {
+                        found = lua_istable(L, -1);
+                        break;
+                    } else {
+                        lua_pop(L, 1);
+                    }
+                }
+            }
+
+            if (found) {
+                LuaPopGuard g(L, 1);
+                expression = point + 1;
+                while (true) {
+                    if (lua_istable(L, -1)) {
+                        auto ptr = lua_topointer(L, -1);
+                        auto it = m_References.find(ptr);
+                        assert(it != m_References.end());
+                        auto& reference = it->second;
+                        point = strchr(expression, '.');
+                        if (point) {
+                            *point = 0;
+                            lua_pushstring(L, expression);
+                            lua_rawget(L, -2);
+                        } else {
+                            // do table assignment
+                            lua_pushstring(L, expression);
+                            lua_pushstring(L, value);
+                            lua_rawset(L, -3);
+
+                            // replace value
+                            auto keyIt = reference.SubHandles.find(expression);
+                            assert(keyIt != reference.SubHandles.end());
+                            auto valueHandle = keyIt->second;
+                            m_Values.erase(valueHandle);
+                            m_Values.insert(std::make_pair(std::move(valueHandle), std::move(LuaValue(valueHandle, value, strlen(value)))));
 
 
-    if (strcmp("this", expression) == 0) {
-        int handle = GetThis(dbg);
-        if (handle < 0) {
+                            if (!WriteRaw(response, "{\"ref\":%d}", reference.Handle)) {
+                                return false;
+                            }
+
+                            m_HandlesToExpose.push_back(reference.Handle);
+
+                            break;
+                        }
+                    } else {
+                        if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+                            return false;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+                    return false;
+                }
+            }
+        } else {
+            // non table assignment, unsupported for now
+            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+                return false;
+            }
+        }
+
+
+
+//        sprintf((char*)newExpression->beg, "%s=\"%s\"", expression, value);
+//        int error = luaL_loadstring(L, (char*)newExpression->beg);
+//        if (error) {
+//            lua_pop(L, 1); // error message
+//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+//                return false;
+//            }
+//        }
+//        error = lua_pcall(L, 0, LUA_MULTRET, 0);
+//        if (error) {
+//            lua_pop(L, 1);
+//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+//                return false;
+//            }
+//        } else {
+//            goto Eval;
+//            // some sort of debugger assignment, unsupported for now
+//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+//                return false;
+//            }
+//        }
+    } else { // no equal sign in expression
+        const int oldTop = lua_gettop(L);
+        sprintf((char*)newExpression->beg, "return %s", expression);
+        int error = luaL_loadstring(L, (char*)newExpression->beg);
+        if (error) {
+            lua_pop(L, 1); // error message
+            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+                return false;
+            }
+        }
+        error = lua_pcall(L, 0, LUA_MULTRET, 0);
+        const int results = lua_gettop(L) - oldTop;
+        assert(results == 1);
+        LuaPopGuard g(L, 1);
+        if (error) {
             if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
                 return false;
             }
         } else {
+            int handle;
+            auto ptr = lua_topointer(L, -1);
+            if (ptr) {
+                const int index = lua_gettop(L);
+                lua_getglobal(L, "_G");
+                GetPokemonTable(L, Pokemon_Handles);
+                const int handleTableIndex = lua_gettop(L);
+                const int globalTableIndex = handleTableIndex-1;
+                LuaPopGuard g(L, 2);
+                handle = Mnemonize(index, handleTableIndex, globalTableIndex, NULL, 0);
+                m_HandlesToExpose.emplace_back(handle);
+            } else {
+                handle = m_NextValueHandle++;
+                m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
+                m_HandlesToExpose.emplace_back(handle);
+            }
+
             if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
                 return false;
             }
-            m_HandlesToExpose.push_back(handle);
         }
-    } else {
-        if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-            return false;
-        }
-    }
+    } // no equal sign
+
 
     if (!WriteRaw(response, ",\"refs\":[")) {
         return false;
