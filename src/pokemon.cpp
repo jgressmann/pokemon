@@ -23,16 +23,32 @@ extern "C" {
 #include <cstdarg>
 #include <functional>
 #include <algorithm>
+#include <cstdarg>
 #include <arpa/inet.h>
+
 
 #define POKEMON_UNUSED(x) (void)x
 #define POKEMON_DEBUG_MESSAGES 1
+#define POKEMON_PTR_TO_STRING(p, name) \
+    char __PtrBuffer[sizeof(void*)*3]; \
+    snprintf(__PtrBuffer, sizeof(__PtrBuffer), sizeof(void*) == 4 ? ("0x%08" PRIxPTR) : ("0x%016" PRIxPTR), (uintptr_t)p); \
+    const char* const name = __PtrBuffer
+
+
+
 
 namespace
 {
 static const char POKEMONTABLE[] = "__PKMNT";
 static const char METATABLE[] = "__metatable";
+static const char ADDRESS[] = "__address";
 
+bool
+IsReservedKey(const char* key)
+{
+    return  strcmp(METATABLE, key) == 0 ||
+            strcmp(ADDRESS, key) == 0;
+}
 
 inline
 int
@@ -45,24 +61,40 @@ const int GlobalTableHandle = 1;
 enum {
     Pokemon_Locations = 1,
     Pokemon_Handles,
+    Pokemon_RefObjects,
     Pokemon_Count = Pokemon_Handles
 };
 
-inline
 void
-GetPokemonTable(lua_State* L, int id) {
+GetPokemonTables(lua_State* L, ...) {
     const int before = lua_gettop(L);
     lua_getglobal(L, POKEMONTABLE);
     assert(lua_type(L, -1) == LUA_TTABLE);
-    lua_rawgeti(L, -1, id);
-    assert(lua_type(L, -1) == LUA_TTABLE);
-    lua_insert(L, -2);
-    lua_pop(L, 1);
-    assert(lua_type(L, -1) == LUA_TTABLE);
+
+    va_list val;
+    va_start(val, L);
+
+    int tables = 0;
+
+    for (int tableId = va_arg(val, int); tableId; tableId = va_arg(val, int), ++tables) {
+        lua_rawgeti(L, -1, tableId);
+        assert(lua_type(L, -1) == LUA_TTABLE);
+        lua_insert(L, -2);
+    }
+    va_end(val);
+
+    lua_pop(L, 1); // pokemon table
+
     const int after = lua_gettop(L);
-    assert(before + 1 == after);
+    assert(before + tables == after);
     POKEMON_UNUSED(before);
     POKEMON_UNUSED(after);
+}
+
+inline
+void
+GetPokemonTable(lua_State* L, int tableId) {
+    GetPokemonTables(L, tableId, 0);
 }
 
 const int ValueHandleOffset = 1 << 16;
@@ -376,26 +408,11 @@ GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& buffer, const char*& 
 
     const int after = lua_gettop(L);
     assert(before == after);
-    (void)before;
-    (void)after;
+    POKEMON_UNUSED(before);
+    POKEMON_UNUSED(after);
 
     return result;
 }
-
-//bool
-//JsonEscape(BufferPtr& jsonString, const char* str, size_t len) {
-//    if (!jsonString) {
-//        jsonString.reset(buf_alloc(len));
-//    }
-//    buffer* buf = jsonString.get();
-//    for (size_t i = 0; i < len; ++i) {
-//        if (!Utf8WriteChar(buf, str[i])) {
-//            return false;
-//        }
-//    }
-
-//    return true;
-//}
 
 enum {
     Cmd_Unknown = -1,
@@ -441,6 +458,27 @@ struct Breakpoint {
     volatile bool Dead;
 };
 
+struct LuaValue {
+    int Type;
+    int Handle;
+    union {
+        lua_Number Number;
+        buffer* String;
+    } Data;
+
+    ~LuaValue();
+    LuaValue() = delete;
+    LuaValue(int handle);
+    LuaValue(int handle, lua_Number n);
+    LuaValue(int handle, bool b);
+    LuaValue(int handle, const char* str, size_t len);
+    LuaValue(LuaValue&& other);
+    LuaValue(const LuaValue&);
+    LuaValue& operator=(const LuaValue&) = delete;
+    static LuaValue fromStack(lua_State* L, int index, int handle);
+};
+
+
 struct DebuggerState {
     lua_State* L;
     JsonPtr CurrentMessage;
@@ -458,47 +496,13 @@ struct DebuggerState {
 
 //    std::vector<std::string> m_Stack;
 
-    struct LuaReference {
-        unsigned char Type;
-        unsigned char Exposed;
-        int Handle;
-        int MetatableHandle;
-        //std::vector<int> SubHandles;
-        typedef std::unordered_map<std::string, int> KeyMap;
-        KeyMap SubHandles;
-        std::string Name;
 
-        LuaReference(int type, int handle, const char* name, size_t len, int metatableHandle);
-    };
-
-    struct LuaValue {
-        int Type;
-        int Handle;
-        union {
-            lua_Number Number;
-            buffer* String;
-        } Data;
-
-        ~LuaValue();
-        LuaValue() = delete;
-        LuaValue(int handle);
-        LuaValue(int handle, lua_Number n);
-        LuaValue(int handle, bool b);
-        LuaValue(int handle, const char* str, size_t len);
-        LuaValue(LuaValue&& other);
-        LuaValue(const LuaValue&);
-        LuaValue& operator=(const LuaValue&) = delete;
-        static LuaValue fromStack(lua_State* L, int index, int handle);
-    };
-
-    typedef std::unordered_map<const void*, LuaReference> RefeferenceTable;
     std::vector<int> m_HandlesToExpose;
     std::vector<bool> m_ExposedObjects;
     std::vector<bool> m_ExposedValues;
     typedef std::unordered_map<int, LuaValue> ValueTable;
 
     ValueTable m_Values;
-    RefeferenceTable m_References;
     std::atomic<Breakpoint*> m_Breakpoints;
     int m_NextBreakpointId;
     std::vector<int> m_Hits;
@@ -536,6 +540,7 @@ public:
     void Resume();
     void Lock() { m_Lock.lock();}
     void Unlock() { m_Lock.unlock();}
+    void ResetHandleTables();
 private:
     void GetStep(int& count, int& action, int& breakpointHit, int& level) const;
     bool Unbreak();
@@ -556,46 +561,33 @@ private:
     int Mnemonize(
         int index,
         int handleTableIndex,
+        int refTableIndex,
         int globalTableIndex,
         const char* name,
         size_t len);
 
     bool GetJsonString(const char* str, size_t len);
-    bool WriteObject(buffer* response, int handle, int handleTableIndex);
+    bool WriteObject(buffer* response, int handle, int handleTableIndex, int refTableIndex);
     bool WriteValue(buffer* response, int handle);
     bool WriteRefs(buffer* response);
-    bool WriteRefs(buffer* response, int handleTableIndex);
+    bool WriteRefs(buffer* response, int handleTableIndex, int refTableIndex);
     int GetThis(lua_Debug& dbg);
     void KillBreakpoints();
     void PruneDeadBreakpoints();
 };
 
-DebuggerState::LuaReference::LuaReference(
-int type,
-int handle,
-const char* name,
-size_t len,
-int metatableHandle)
-    : Type((unsigned char)type)
-    , Exposed(false)
-    , Handle(handle)
-    , MetatableHandle(metatableHandle)
-    , Name(name, name + len)
-{
-}
-
-DebuggerState::LuaValue::~LuaValue() {
+LuaValue::~LuaValue() {
     if (LUA_TSTRING == (int)Type) {
         buf_free(Data.String);
     }
 }
 
-DebuggerState::LuaValue::LuaValue(LuaValue&& other) {
+LuaValue::LuaValue(LuaValue&& other) {
     memcpy(this, &other, sizeof(*this));
     other.Type = LUA_TNIL;
 }
 
-DebuggerState::LuaValue::LuaValue(const LuaValue& other) {
+LuaValue::LuaValue(const LuaValue& other) {
     memcpy(this, &other, sizeof(other));
 
     if (Type == LUA_TSTRING) {
@@ -611,13 +603,13 @@ DebuggerState::LuaValue::LuaValue(const LuaValue& other) {
     }
 }
 
-DebuggerState::LuaValue::LuaValue(int handle)
+LuaValue::LuaValue(int handle)
     : Type(LUA_TNIL)
     , Handle(handle)
 {
 }
 
-DebuggerState::LuaValue::LuaValue(int handle, lua_Number n)
+LuaValue::LuaValue(int handle, lua_Number n)
     : Type(LUA_TNUMBER)
     , Handle(handle)
 {
@@ -625,14 +617,14 @@ DebuggerState::LuaValue::LuaValue(int handle, lua_Number n)
     Data.Number = n;
 }
 
-DebuggerState::LuaValue::LuaValue(int handle, bool b)
+LuaValue::LuaValue(int handle, bool b)
     : Type(LUA_TBOOLEAN)
     , Handle(handle)
 {
     Data.Number = b ? 1 : 0;
 }
 
-DebuggerState::LuaValue::LuaValue(int handle, const char* str, size_t len)
+LuaValue::LuaValue(int handle, const char* str, size_t len)
     : Type(LUA_TSTRING)
     , Handle(handle)
 {
@@ -648,8 +640,8 @@ DebuggerState::LuaValue::LuaValue(int handle, const char* str, size_t len)
     assert(buf_used(buf) == len);
 }
 
-DebuggerState::LuaValue
-DebuggerState::LuaValue::fromStack(lua_State* L, int index, int handle) {
+LuaValue
+LuaValue::fromStack(lua_State* L, int index, int handle) {
     const auto type = lua_type(L, index);
     switch (type) {
     case LUA_TBOOLEAN:
@@ -727,21 +719,13 @@ DebuggerState::GetJsonString(const char* str, size_t len) {
 }
 
 int
-DebuggerState::Mnemonize(int index, int handleTableIndex, int globalTableIndex, const char* name, size_t nameLen) {
+DebuggerState::Mnemonize(int index, int handleTableIndex, int refTableIndex, int globalTableIndex, const char* name, size_t nameLen) {
     assert(index > 0);
     assert(handleTableIndex > 0);
-
+    assert(refTableIndex > 0);
+    assert(globalTableIndex > 0);
 
     int handle = 0;
-
-#define NMEMONIZE \
-    do { \
-        lua_pushvalue(L, index); \
-        const int handleTableLen = (int)lua_objlen(L, handleTableIndex); \
-        handle = handleTableLen + 1; \
-        assert(IsObjectHandle(handle)); \
-        lua_rawseti(L, handleTableIndex, handle); \
-    } while (0)
 
     const int type = lua_type(L, index);
     switch (type) {
@@ -750,87 +734,84 @@ DebuggerState::Mnemonize(int index, int handleTableIndex, int globalTableIndex, 
     case LUA_TLIGHTUSERDATA:
     case LUA_TUSERDATA:
     case LUA_TTHREAD: {
-        bool seen = false;
-        const auto ptr = lua_topointer(L, index);
-        auto it = m_References.find(ptr);
-        if (it == m_References.end()) {
+        lua_pushvalue(L, index);
+        lua_rawget(L, refTableIndex);
+        handle = lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        const bool seen = handle >= GlobalTableHandle;
+        if (!seen) {
             assert(!lua_rawequal(L, index, handleTableIndex));
-            NMEMONIZE;
-            it = m_References.insert(std::make_pair(ptr, LuaReference(type, handle, name, nameLen, 0))).first;
+            assert(!lua_rawequal(L, index, refTableIndex));
+            // store (handle, value) in handle table
+            lua_pushvalue(L, index);
+            const int handleTableLen = (int)lua_objlen(L, handleTableIndex);
+            handle = handleTableLen + 1;
+            assert(IsObjectHandle(handle));
+            lua_rawseti(L, handleTableIndex, handle);
+            // store (value, handle) in ref obj table
+            lua_pushvalue(L, index);
+            lua_pushinteger(L, handle);
+            lua_rawset(L, refTableIndex);
             if (lua_getmetatable(L, index)) {
-                it->second.MetatableHandle =  Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, "metatable", 9);
+                Mnemonize(lua_gettop(L), handleTableIndex, refTableIndex, globalTableIndex, METATABLE, sizeof(METATABLE) - 1);
                 lua_pop(L, 1);
             }
-        } else {
-            seen = true;
-            handle = it->second.Handle;
-        }
-        if (!seen && type == LUA_TTABLE) {
-            const bool isGlobalTable = lua_rawequal(L, globalTableIndex, index);
-            auto& reference = it->second;
-            lua_pushnil(L);  /* first key */
-            while (lua_next(L, index) != 0) {
-                lua_pushvalue(L, -2);
-                size_t keyLen;
-                const char* key = lua_tolstring(L, -1, &keyLen);
-                if (isGlobalTable && strcmp(key, POKEMONTABLE) == 0) {
-                    // skip
-                } else {
-                    const int subhandle = Mnemonize(lua_gettop(L)-1, handleTableIndex, globalTableIndex, key, keyLen);
-                    assert(subhandle >= 0);
-                    //reference.SubHandles.push_back(subhandle);
-                    reference.SubHandles.insert(std::make_pair(std::string(key, key + keyLen), subhandle));
+            if (type == LUA_TTABLE) {
+                const bool isGlobalTable = lua_rawequal(L, globalTableIndex, index);
+                lua_pushnil(L);  /* first key */
+                while (lua_next(L, index) != 0) {
+                    lua_pushvalue(L, -2);
+                    size_t keyLen;
+                    const char* key = lua_tolstring(L, -1, &keyLen);
+                    if (isGlobalTable && strcmp(key, POKEMONTABLE) == 0) {
+                        // skip
+                    } else {
+                        Mnemonize(lua_gettop(L)-1, handleTableIndex, refTableIndex, globalTableIndex, key, keyLen);
+                    }
+                    lua_pop(L, 2); // pop value, name
                 }
-                lua_pop(L, 2); // pop value, name
             }
-        } // !seen
+        }
     } break;
     default: {
         //NMEMONIZE;
     } break;
     }
 
-#undef NMEMONIZE
-
     return handle;
 }
 
 void
 DebuggerState::Mnemonize() {
-    int topBefore = lua_gettop(L);
+    const int topBefore = lua_gettop(L);
 
-    m_References.clear();
     m_Values.clear();
     //m_NextValueHandle = ValueHandleOffset;
     m_NextValueHandle = -1;
 
     lua_getglobal(L, POKEMONTABLE);
-    // clear old tables
-    lua_pushnil(L);
-    lua_rawseti(L, -2, Pokemon_Handles);
+    lua_rawgeti(L, -1, Pokemon_Handles);
+    lua_rawgeti(L, -2, Pokemon_RefObjects);
     // clear self
     lua_pushnil(L);
     lua_setglobal(L, POKEMONTABLE);
-
-    // make new ones
-    lua_newtable(L); // handles
     lua_getglobal(L, "_G");
     const int globalTableIndex = lua_gettop(L);
-    const int handleTableIndex = globalTableIndex-1;
-    const int pokemenTableIndex = handleTableIndex-1;
+    const int refTableIndex = globalTableIndex-1;
+    const int handleTableIndex = refTableIndex-1;
 
-    Mnemonize(globalTableIndex, handleTableIndex, globalTableIndex, "_G", 2);
+    Mnemonize(globalTableIndex, handleTableIndex, refTableIndex, globalTableIndex, "_G", 2);
 
     lua_pop(L, 1); // global table
-
-    // store handle table
-    lua_rawseti(L, pokemenTableIndex, Pokemon_Handles);
+    lua_pop(L, 1); // ref table
+    lua_pop(L, 1); // handle table
 
     lua_setglobal(L, POKEMONTABLE);
 
-    int topAfter = lua_gettop(L);
+    const int topAfter = lua_gettop(L);
     assert(topBefore == topAfter);
-
+    POKEMON_UNUSED(topBefore);
+    POKEMON_UNUSED(topAfter);
 }
 
 void
@@ -1285,7 +1266,7 @@ DebuggerState::ProcessRequest(buffer* response, JsonPtr&& json) {
 }
 
 bool
-DebuggerState::WriteRefs(buffer* response, int handleTableIndex) {
+DebuggerState::WriteRefs(buffer* response, int handleTableIndex, int refTableIndex) {
     m_ExposedObjects.clear();
     m_ExposedValues.clear();
     // serialize refs
@@ -1308,7 +1289,7 @@ DebuggerState::WriteRefs(buffer* response, int handleTableIndex) {
                     }
                 }
 
-                if (!WriteObject(response, handle, handleTableIndex)) {
+                if (!WriteObject(response, handle, handleTableIndex, refTableIndex)) {
                     return false;
                 }
             }
@@ -1339,11 +1320,11 @@ DebuggerState::WriteRefs(buffer* response, int handleTableIndex) {
 bool
 DebuggerState::WriteRefs(buffer* response) {
     const int before = lua_gettop(L);
-    GetPokemonTable(L, Pokemon_Handles);
+    GetPokemonTables(L, Pokemon_Handles, Pokemon_RefObjects, 0);
 
-    bool result = WriteRefs(response, lua_gettop(L));
+    bool result = WriteRefs(response, lua_gettop(L)-1, lua_gettop(L));
 
-    lua_pop(L, 1);
+    lua_pop(L, 2);
     const int after = lua_gettop(L);
     assert(before == after);
     POKEMON_UNUSED(before);
@@ -1413,27 +1394,22 @@ DebuggerState::WriteValue(buffer* response, int handle) {
 }
 
 bool
-DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
+DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex, int refTableIndex) {
     assert(handle >= GlobalTableHandle);
     assert(handleTableIndex > 0);
+    assert(refTableIndex > 0);
 
     lua_rawgeti(L, handleTableIndex, HandleToLuaIndex(handle));
     const int typeOnStack = lua_type(L, -1);
     if (typeOnStack == LUA_TNIL) {
         lua_pop(L, 1);
-        if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+        if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"null\"}", handle)) {
             return false;
         }
     } else {
-        auto ptr = lua_topointer(L, -1);
-        assert(ptr);
         LuaPopGuard g(L, 1);
         const int index = lua_gettop(L);
-        auto it = m_References.find(ptr);
-        assert(it != m_References.end());
-        auto& reference = it->second;
-        assert(reference.Type == typeOnStack);
-        switch (reference.Type) {
+        switch (typeOnStack) {
         default:
             assert(false);
             return false;
@@ -1443,57 +1419,71 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
         case LUA_TUSERDATA:
         case LUA_TTHREAD:
         case LUA_TLIGHTUSERDATA: {
-            switch (reference.Type) {
-            case LUA_TFUNCTION:
-                if (!GetJsonString(reference.Name.c_str(), reference.Name.length())) {
+            auto ptr = lua_topointer(L, index);
+            POKEMON_PTR_TO_STRING(ptr, strPtr);
+            switch (typeOnStack) {
+            case LUA_TFUNCTION: {
+                int addressHandle = m_NextValueHandle--;
+                m_Values.insert(std::make_pair(std::move(addressHandle), std::move(LuaValue(addressHandle, strPtr, strlen(strPtr)))));
+                m_HandlesToExpose.emplace_back(addressHandle);
+
+                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"\",\"properties\":[{\"ref\":%d,\"name\":\"%s\"}]}", handle, addressHandle, ADDRESS)) {
                     return false;
                 }
-                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"}", reference.Handle, m_JsonString->beg)) {
-                    return false;
-                }
-                break;
+            } break;
             default: {
-                const bool hasMetatable = reference.MetatableHandle >= GlobalTableHandle;
-                /*
-                if (!WriteRaw(buf,
-    "{\"handle\":%d,\"type\":\"object\",\"className\":\"%p <%d items>\",\"properties\":[",
-                              reference.Handle,
-                              ptr,
-                              (int)(reference.SubHandles.size() + hasMetatable))) {
-                    return false;
+                int metaTableHandle = 0;
+                if (lua_getmetatable(L, index)) {
+                    lua_rawget(L, refTableIndex);
+                    metaTableHandle = lua_tointeger(L, -1);
+                    lua_pop(L, 1);
                 }
-                */
+                const bool hasMetatable = metaTableHandle >= GlobalTableHandle;
+
+
                 if (!WriteRaw(buf,
     "{\"handle\":%d,\"type\":\"object\",\"properties\":[",
-                              reference.Handle)) {
+                              handle)) {
                     return false;
                 }
                 bool firstMember = true;
                 if (hasMetatable) {
-                    m_HandlesToExpose.push_back(reference.MetatableHandle);
+                    m_HandlesToExpose.push_back(metaTableHandle);
 
                     firstMember = false;
-                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", reference.MetatableHandle, METATABLE)) {
+                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", metaTableHandle, METATABLE)) {
                         return false;
                     }
                 }
+
+                if (!firstMember) {
+                    if (!WriteRaw(buf, ",")) {
+                        return false;
+                    }
+                }
+
+                int addressHandle = m_NextValueHandle--;
+                m_Values.insert(std::make_pair(std::move(addressHandle), std::move(LuaValue(addressHandle, strPtr, strlen(strPtr)))));
+                m_HandlesToExpose.emplace_back(addressHandle);
+
+                if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", addressHandle, ADDRESS)) {
+                    return false;
+                }
+                firstMember = false;
                 const char* className = "Object";
-                switch (reference.Type) {
+                switch (typeOnStack) {
                 case LUA_TUSERDATA:
                 case LUA_TTHREAD:
                 case LUA_TLIGHTUSERDATA:
                     break; // fix me
                 case LUA_TTABLE: {
+
                     assert(!lua_rawequal(L, index, handleTableIndex));
+                    assert(!lua_rawequal(L, index, refTableIndex));
                     lua_pushnil(L);  /* first key */
-                    //size_t subHandleIndex = 0;
-                    size_t counted = 0;
-                    bool isArray = !hasMetatable && handle != GlobalTableHandle;
-                    int arrayIndex = 1;
                     while (lua_next(L, index) != 0) {
-                        //int subhandle = reference.SubHandles[subHandleIndex];
                         const int valueType = lua_type(L, -1);
-                        (void)valueType;
+                        POKEMON_UNUSED(valueType);
                         lua_pushvalue(L, -2);
                         size_t len;
                         const char* key = lua_tolstring(L, -1, &len);
@@ -1501,16 +1491,11 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                             lua_pop(L, 2);
                             continue;
                         }
-                        std::string stdKey(key, key + len);
-                        auto keyIt = reference.SubHandles.find(stdKey);
-                        assert(keyIt != reference.SubHandles.end());
-                        int subhandle = keyIt->second;
                         if (!GetJsonString(key, len)) {
                             lua_pop(L, 3);
                             return false;
                         }
                         lua_pop(L, 1); // name copy
-                        assert(counted < reference.SubHandles.size());
                         if (!firstMember) {
                             if (!WriteRaw(buf, ",")) {
                                 lua_pop(L, 2);
@@ -1518,12 +1503,15 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                             }
                         }
 
+                        lua_pushvalue(L, -1);
+                        lua_rawget(L, refTableIndex);
+                        int subhandle = lua_tointeger(L, -1);
+                        lua_pop(L, 1);
+
                         if (subhandle == 0) {
                             subhandle = m_NextValueHandle--;
                             assert(IsValueHandle(subhandle));
                             m_Values.insert(std::make_pair(std::move(subhandle), std::move(LuaValue::fromStack(L, -1, subhandle))));
-                            keyIt->second = subhandle;
-                            //fprintf(stderr, "Assign %d for value subhandle in table %d, key %s\n", subhandle, handle, stdKey.c_str());
                         }
 
                         // FIXME: is there a way to not always expose evertying?
@@ -1536,25 +1524,8 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                             return false;
                         }
 
-
-
-                        // array?
-                        if (isArray) {
-                            lua_rawgeti(L, index, arrayIndex++);
-                            const int indexedValueType = lua_type(L, -1);
-                            (void)indexedValueType;
-                            isArray = lua_rawequal(L, -1, -2) != 0;
-                            lua_pop(L, 1);
-                        }
-
-                        //++subHandleIndex;
                         firstMember = false;
-                        ++counted;
                         lua_pop(L, 1); // value;
-                    }
-                    assert(counted == reference.SubHandles.size());
-                    if (isArray) {
-                        className = "Array";
                     }
                 } break;
                 }
@@ -1699,9 +1670,10 @@ DebuggerState::ProcessLookup(buffer* response, int64_t seq, json_value* args) {
         return false;
     }
 
-    GetPokemonTable(L, Pokemon_Handles);
-    LuaPopGuard handleTable(L, 1);
-    const int handleTableIndex = lua_gettop(L);
+    GetPokemonTables(L, Pokemon_Handles, Pokemon_RefObjects, 0);
+    LuaPopGuard handleTable(L, 2);
+    const int handleTableIndex = lua_gettop(L)-1;
+    const int refTableIndex = lua_gettop(L);
 
     bool first = true;
     for (size_t i = 0; i < handles->u.array.length; ++i) {
@@ -1724,7 +1696,7 @@ DebuggerState::ProcessLookup(buffer* response, int64_t seq, json_value* args) {
                     return false;
                 }
             } else {
-                if (!WriteObject(response, handle, handleTableIndex)) {
+                if (!WriteObject(response, handle, handleTableIndex, refTableIndex)) {
                     return false;
                 }
             }
@@ -1828,6 +1800,9 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
         }
 
 
+        GetPokemonTable(L, Pokemon_RefObjects);
+        const int refTableIndex = lua_gettop(L);
+        LuaPopGuard metaTablesPopGuard(L, 1);
 
         int cArgs = 0;
         char cArgBuffer[32];
@@ -1840,20 +1815,17 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
                 name = cArgBuffer;
             }
 
-            //fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
+            lua_pushvalue(L, -1);
+            lua_rawget(L, refTableIndex);
+            int handle = lua_tointeger(L, -1);
+            lua_pop(L, 1);
 
-            int handle;
-            auto ptr = lua_topointer(L, -1);
-            if (ptr) {
-                auto it = m_References.find(ptr);
-                assert(it != m_References.end());
-                handle = it->second.Handle;
-                m_HandlesToExpose.emplace_back(handle);
-            } else {
+            if (!handle) {
                 handle = m_NextValueHandle--;
                 m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
-                m_HandlesToExpose.emplace_back(handle);
             }
+
+            m_HandlesToExpose.emplace_back(handle);
 
             if (j > 1) {
                 if (!WriteRaw(response, ",")) {
@@ -1878,7 +1850,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
         m_HandlesToExpose.emplace_back(GlobalTableHandle);
         */
 
-        //fflush(stderr);
+
 
         if (!WriteRaw(response, "]},\"refs\":[")) {
             return false;
@@ -1904,26 +1876,27 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
 
         // remember upvalues
 
+        GetPokemonTable(L, Pokemon_RefObjects);
+        const int refTableIndex = lua_gettop(L);
+        LuaPopGuard metaTablesPopGuard(L, 1);
+
         const char* name;
         for (int j = 1; j <= dbg.nups; ++j) {
-            name = lua_getupvalue(L, -1, j);
+            name = lua_getupvalue(L, -2, j);
             assert(name);
             LuaPopGuard g(L, 1);
 
-            //fprintf(stderr, "%s (%d)\n", name, lua_type(L, -1));
+            lua_pushvalue(L, -1);
+            lua_rawget(L, refTableIndex);
+            int handle = lua_tointeger(L, -1);
+            lua_pop(L, 1);
 
-            int handle;
-            auto ptr = lua_topointer(L, -1);
-            if (ptr) {
-                auto it = m_References.find(ptr);
-                assert(it != m_References.end());
-                handle = it->second.Handle;
-                m_HandlesToExpose.emplace_back(handle);
-            } else {
+            if (!handle) {
                 handle = m_NextValueHandle--;
                 m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
-                m_HandlesToExpose.emplace_back(handle);
             }
+
+            m_HandlesToExpose.emplace_back(handle);
 
             if (j > 1) {
                 if (!WriteRaw(response, ",")) {
@@ -1936,8 +1909,6 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
             }
 
         }
-
-        //fflush(stderr);
 
         if (!WriteRaw(response, "]},\"refs\":[")) {
             return false;
@@ -2026,6 +1997,10 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
         return false;
     }
 
+    GetPokemonTable(L, Pokemon_RefObjects);
+    const int refTableIndex = lua_gettop(L);
+    LuaPopGuard metaTablesPopGuard(L, 1);
+
     char* value = NULL;
     char* equal = (char*)strchr(expression, '=');
 
@@ -2076,10 +2051,6 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
         LuaPopGuard g(L, 1);
         while (true) {
             if (lua_istable(L, -1)) {
-                auto ptr = lua_topointer(L, -1);
-                auto it = m_References.find(ptr);
-                assert(it != m_References.end());
-                auto& tableReference = it->second;
                 point = strchr(expression, '.');
                 if (point) {
                     *point = 0;
@@ -2087,10 +2058,14 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                     lua_rawget(L, -2);
                     lua_replace(L, -2); // replace table with value
                     expression = point + 1;
-                } else { // no ppint
+                } else { // no point
+                    lua_pushvalue(L, -1);
+                    lua_rawget(L, refTableIndex);
+                    const int tableHandle = lua_tointeger(L, -1);
+                    lua_pop(L, 1);
                     int handle = 0;
                     if (equal) { // table assigment
-                        if (strcmp(METATABLE, expression) == 0) {
+                        if (IsReservedKey(expression)) {
                             // Changing the meta table is not supported
                             handle = m_NextValueHandle--;
                             if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
@@ -2102,15 +2077,9 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                             lua_pushstring(L, value);
                             lua_rawset(L, -3);
 
-                            // replace value
-                            auto keyIt = tableReference.SubHandles.find(expression);
-                            assert(keyIt != tableReference.SubHandles.end());
-                            handle = keyIt->second;
-                            m_Values.erase(handle);
-                            m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue(handle, value, strlen(value)))));
-                            m_HandlesToExpose.push_back(tableReference.Handle);
+                            m_HandlesToExpose.emplace_back(tableHandle);
 
-                            if (!WriteRaw(response, "{\"ref\":%d}", tableReference.Handle)) {
+                            if (!WriteRaw(response, "{\"ref\":%d}", tableHandle)) {
                                 return false;
                             }
                         }
@@ -2118,18 +2087,22 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                         if (strcmp(METATABLE, expression) == 0) {
                             lua_getmetatable(L, -1);
                             lua_replace(L, -2); // replace table with value
+                        } else if (strcmp(ADDRESS, expression) == 0) {
+                            handle = m_NextValueHandle--;
+                            auto ptr = lua_topointer(L, -1);
+                            POKEMON_PTR_TO_STRING(ptr, strPtr);
+                            m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue(handle, strPtr, strlen(strPtr)))));
+                            m_HandlesToExpose.emplace_back(handle);
                         } else {
                             lua_pushstring(L, expression);
                             lua_rawget(L, -2);
                             lua_replace(L, -2);
                         }
-                        ptr = lua_topointer(L, -1);
-                        if (ptr) {
-                            auto it = m_References.find(ptr);
-                            assert(it != m_References.end());
-                            handle = it->second.Handle;
-                            m_HandlesToExpose.emplace_back(handle);
-                        } else {
+                        lua_pushvalue(L, -1);
+                        lua_rawget(L, refTableIndex);
+                        handle = lua_tointeger(L, -1);
+                        lua_pop(L, 1);
+                        if (handle == 0) {
                             handle = m_NextValueHandle--;
                             m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
                             m_HandlesToExpose.emplace_back(handle);
@@ -2151,7 +2124,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                             return false;
                         }
                     } else { // global assignment
-                        if (strcmp(METATABLE, expression) == 0) {
+                        if (IsReservedKey(expression)) {
                             // Changing the meta table is not supported
                             handle = m_NextValueHandle--;
                             if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
@@ -2169,13 +2142,11 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                         }
                     }
                 } else {
-                    auto ptr = lua_topointer(L, -1);
-                    if (ptr) {
-                        auto it = m_References.find(ptr);
-                        assert(it != m_References.end());
-                        handle = it->second.Handle;
-                        m_HandlesToExpose.emplace_back(handle);
-                    } else {
+                    lua_pushvalue(L, -1);
+                    lua_rawget(L, refTableIndex);
+                    handle = lua_tointeger(L, -1);
+                    lua_pop(L, 1);
+                    if (handle == 0) {
                         handle = m_NextValueHandle--;
                         m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
                         m_HandlesToExpose.emplace_back(handle);
@@ -2283,10 +2254,11 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
         }
 
         lua_getglobal(L, "_G");
-        GetPokemonTable(L, Pokemon_Handles);
-        const int handleTableIndex = lua_gettop(L);
+        GetPokemonTables(L, Pokemon_Handles, Pokemon_RefObjects, 0);
+        const int refTableIndex = lua_gettop(L);
+        const int handleTableIndex = refTableIndex - 1;
         const int globalTableIndex = handleTableIndex-1;
-        LuaPopGuard metatableGuard(L, 2);
+        LuaPopGuard metatableGuard(L, 3);
 
         BufferPtr filePathBuffer;
         lua_Debug dbg;
@@ -2296,12 +2268,9 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
             }
 
             assert(lua_isfunction(L, -1));
-            auto ptr = lua_topointer(L, -1);
-            assert(ptr);
-            assert(m_References.count(ptr));
             // This call can come directly in response to a breakpoint being hit
             // thus we need to mno
-            int functionHandle = Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, NULL, 0);
+            int functionHandle = Mnemonize(lua_gettop(L), handleTableIndex, refTableIndex, globalTableIndex, NULL, 0);
             m_HandlesToExpose.push_back(functionHandle);
             lua_pop(L, 1);
 
@@ -2322,7 +2291,6 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
             }
 
 
-            //const bool isC = strcmp(dbg.what, "C") == 0;
             const char* filePath;
             int line;
             GetLocation(L, dbg, filePathBuffer, filePath, line);
@@ -2417,10 +2385,12 @@ DebuggerState::ProcessBacktrace(buffer* response, int64_t seq, json_value* args)
         }
 
         lua_getglobal(L, "_G");
-        GetPokemonTable(L, Pokemon_Handles);
-        const int handleTableIndex = lua_gettop(L);
+        GetPokemonTables(L, Pokemon_Handles, Pokemon_RefObjects, 0);
+        const int refTableIndex = lua_gettop(L);
+        const int handleTableIndex = refTableIndex - 1;
         const int globalTableIndex = handleTableIndex-1;
-        LuaPopGuard metatableGuard(L, 2);
+        const int extraLocals = 3;
+        LuaPopGuard metatableGuard(L, extraLocals);
 
         BufferPtr filePathBuffer;
         lua_Debug dbg;
@@ -2440,22 +2410,20 @@ DebuggerState::ProcessBacktrace(buffer* response, int64_t seq, json_value* args)
             if (isMain) {
                 dbg.name = "Lua entry";
             } else if (isC) {
-                snprintf(functionPointer, sizeof(functionPointer), "%p", lua_topointer(L, -1));
+                snprintf(functionPointer, sizeof(functionPointer), sizeof(void*) == 4 ? ("0x%08" PRIxPTR) : ("0x%016" PRIxPTR), (uintptr_t)lua_topointer(L, -1));
                 dbg.name = functionPointer;
             }
-
-
-            int functionHandle = Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, dbg.name, strlen(dbg.name));
-            m_HandlesToExpose.push_back(functionHandle);
 
             // remember upvalues
             const char* name;
             for (int i = 1; i <= dbg.nups; ++i) {
                 name = lua_getupvalue(L, -1, i);
                 assert(name);
-                Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, NULL, 0);
+                Mnemonize(lua_gettop(L), handleTableIndex, refTableIndex, globalTableIndex, NULL, 0);
                 lua_pop(L, 1);
             }
+
+
 
             lua_pop(L, 1); // function
 
@@ -2466,13 +2434,13 @@ DebuggerState::ProcessBacktrace(buffer* response, int64_t seq, json_value* args)
             }
 
             // remove works stuff on stack;
-            locals -= 2;
+            locals -= extraLocals;
 
             // remember locals
             for (int j = 1; j < locals; ++j) {
                 name = lua_getlocal(L, &dbg, j);
                 assert(name);
-                Mnemonize(lua_gettop(L), handleTableIndex, globalTableIndex, NULL, 0);
+                Mnemonize(lua_gettop(L), handleTableIndex, refTableIndex, globalTableIndex, NULL, 0);
                 lua_pop(L, 1);
             }
 
@@ -2496,11 +2464,15 @@ DebuggerState::ProcessBacktrace(buffer* response, int64_t seq, json_value* args)
                 m_HandlesToExpose.push_back(thisHandle);
             }
 
+            int functionHandle = m_NextValueHandle--;
+
+
+
             if (!WriteRaw(response,
-"{\"index\":%d,\"receiver\":{\"ref\":%d},\"func\":{\"ref\":%d},\"script\":{\"type\":\"script\",\"name\":\"%s\"},"
+"{\"index\":%d,\"receiver\":{\"ref\":%d},\"func\":{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"},\"script\":{\"type\":\"script\",\"name\":\"%s\"},"
 "\"debuggerFrame\":false,"
 "\"line\":%d,\"column\":1,\"sourceLineText\":\"%s\",\"scopes\":[{\"index\":0,\"type\":1},{\"index\":1,\"type\":3},{\"index\":2,\"type\":0}]}",
-                          frame, thisHandle, functionHandle, m_JsonString->beg, line-1, dbg.name)) {
+                          frame, thisHandle, functionHandle, dbg.name, m_JsonString->beg, line-1, dbg.name)) {
                 break;
             }
 
@@ -2570,12 +2542,54 @@ DebuggerState::Connect() {
     std::lock_guard<std::mutex> g(m_Lock);
     KillBreakpoints();
     m_NextBreakpointId = 0;
+
+    ResetHandleTables();
 }
 
 void
 DebuggerState::Disconnect() {
     std::lock_guard<std::mutex> g(m_Lock);
     KillBreakpoints();
+
+    ResetHandleTables();
+}
+
+void
+DebuggerState::ResetHandleTables()
+{
+    const int before = lua_gettop(L);
+    // fetch pokemon table
+    lua_getglobal(L, POKEMONTABLE);
+    assert(lua_type(L, -1) == LUA_TTABLE);
+
+    // handle -> ref => weak values
+    lua_newtable(L); // handle table
+    lua_newtable(L); // handle meta table
+    lua_pushstring(L, "__mode");
+    lua_pushstring(L, "v");
+    lua_rawset(L, -3);
+    lua_setmetatable(L, -2);
+
+    // set new handle table
+    lua_rawseti(L, -2, Pokemon_Handles);
+
+    // ref -> handle => weak keys
+    lua_newtable(L); // ref obj table
+    lua_newtable(L); // handle meta table
+    lua_pushstring(L, "__mode");
+    lua_pushstring(L, "k");
+    lua_rawset(L, -3);
+    lua_setmetatable(L, -2);
+
+    // set new ref obj table
+    lua_rawseti(L, -2, Pokemon_RefObjects);
+
+
+    lua_pop(L, 1); // pokemon table
+    const int after = lua_gettop(L);
+    assert(before == after);
+    POKEMON_UNUSED(before);
+    POKEMON_UNUSED(after);
 }
 
 void
@@ -3375,6 +3389,8 @@ luaD_register(lua_State* L) {
             lua_rawseti(L, -2, i + 1);
         }
         lua_setglobal(L, POKEMONTABLE);
+
+        state->ResetHandleTables();
 
         state->Init();
         state->Unlock();
