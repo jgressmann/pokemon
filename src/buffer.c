@@ -33,9 +33,16 @@
 #if defined(_WIN64) || defined(_WIN32)
 #   include <windows.h>
 #   include <inttypes.h>
-/*#define cas(ptr, new, old) InterlockedCompareExchange128(ptr, (*((int64_t*)new) >> 64, *((int64_t*)new))*/
+#   define membar() MemoryBarrier()
+#   define INLINE __forceinline
+#   if defined(_WIN64)
+#       define cas(ptr, new, old) InterlockedCompareExchange128((LONGLONG volatile *)ptr, (*((LONGLONG*)new) >> 64, *((LONGLONG*)new), (LONGLONG*)old)
+#   else
+#       define cas(ptr, new, old) (InterlockedCompareExchange64((LONGLONG volatile *)ptr, *((LONGLONG*)new), *((LONGLONG*)old)) == *((LONGLONG*)old))
+#   endif
 #elif defined(__GNUC__)
-#define membar() __sync_synchronize()
+#   define membar() __sync_synchronize()
+#   define INLINE inline
 #   if __WORDSIZE == 32
 #       define cas __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
 #   else
@@ -43,14 +50,16 @@
 #   endif
 #endif
 
+/* assert sizeof aba_ptr == 2 * sizeof(void*) */
+typedef char AssertSizeofAbaPtrEqualsTwiceSizeofVoidStar[sizeof(aba_ptr) == 2 * sizeof(void*) ? 1 : -1];
+
 static aba_ptr s_Stack;
 
 static
 void
-Push(buffer* node)
-{
-    aba_ptr* head = &s_Stack;
-    aba_ptr* nodeNext = (aba_ptr*)node;
+Push(buffer* node) {
+    aba_ptr volatile * head = &s_Stack;
+    aba_ptr volatile * nodeNext = (aba_ptr*)node;
     aba_ptr oldHead, newHead;
 
     do {
@@ -63,15 +72,14 @@ Push(buffer* node)
         membar(); /* make write visible */
 
         newHead.Aba = oldHead.Aba + 1;
-        newHead.Ptr = (uintptr_t*)node;
+        newHead.Ptr = node;
     } while (!cas(head, &newHead, &oldHead));
 }
 
 static
 buffer*
-Pop()
-{
-    aba_ptr* head = &s_Stack;
+Pop() {
+    aba_ptr volatile * head = &s_Stack;
     buffer* result = NULL;
     aba_ptr oldHead, newHead;
 
@@ -97,7 +105,7 @@ Pop()
 
 static
 void
-Teardown() {
+Teardown(void) {
     buffer* buf = NULL;
     while ((buf = Pop()) != NULL) {
         free(buf->beg);
@@ -106,7 +114,7 @@ Teardown() {
 }
 
 static
-inline
+INLINE
 size_t
 Max(size_t lhs, size_t rhs) {
     return lhs < rhs ? rhs : lhs;
@@ -121,8 +129,7 @@ static void Setup() {
 
 extern
 buffer*
-buf_alloc(size_t bytes)
-{
+buf_alloc(size_t bytes) {
     buffer* buf = Pop(&s_Stack);
 
     if (!buf) {
@@ -145,8 +152,7 @@ buf_alloc(size_t bytes)
 
 extern
 int
-buf_grow(buffer* buf, size_t bytes)
-{
+buf_grow(buffer* buf, size_t bytes) {
     size_t oldSize, oldUsed, newSize;
 
     assert(buf);

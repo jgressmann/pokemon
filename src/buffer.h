@@ -7,7 +7,11 @@
 #include <stdint.h>
 
 #if defined( _MSC_VER)
-#   define ALIGN(x) __declspec(align(x))
+#   if defined(_WIN64)
+#      define ALIGN(x) __declspec(align(16))
+#   else
+#      define ALIGN(x) __declspec(align(8))
+#   endif
 #elif defined(__GNUC__)
 #   define ALIGN(x) __attribute__((aligned (x)))
 #endif
@@ -16,10 +20,10 @@
 extern "C" {
 #endif
 
-typedef struct
+typedef ALIGN(2 * sizeof(void*)) struct
 {
-    volatile uintptr_t* Ptr ALIGN(2 * sizeof(uintptr_t*));
-    volatile uintptr_t Aba;
+    void* Ptr;
+    uintptr_t Aba;
 }
 aba_ptr;
 
