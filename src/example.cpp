@@ -10,7 +10,7 @@ extern "C" {
 
 #if defined(_WIN32) || defined(_WIN64)
 #   include <windows.h>
-#   define sleep(x) Sleep(x*1000)
+#   define sleep(x) Sleep((DWORD)(x*1000))
 #else
 #   include <unistd.h>
 #endif

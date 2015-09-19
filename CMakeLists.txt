@@ -4,8 +4,6 @@ cmake_minimum_required(VERSION 2.8)
 
 include(${CMAKE_ROOT}/Modules/FindPkgConfig.cmake)
 
-pkg_check_modules(LUA51 REQUIRED lua5.1)
-
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(STATUS "64 bit arch")
     set(M64 1)
@@ -26,12 +24,14 @@ set(LIBPOKEMONSRC
     src/json.h
     src/buffer.c
     src/buffer.h
+    src/platform.h
 )
 
 file(GLOB LUAFILES ${CMAKE_SOURCE_DIR}/*.js ${CMAKE_SOURCE_DIR}/*.lua)
 file(COPY ${LUAFILES} DESTINATION ${CMAKE_BINARY_DIR})
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    pkg_check_modules(LUA51 REQUIRED lua5.1)
     execute_process(COMMAND uname -a OUTPUT_VARIABLE ARCH)
     add_definitions(
         -D_GNU_SOURCE
@@ -61,7 +61,15 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     set(LIBPOKEMONSRC
         ${LIBPOKEMONSRC}
         src/linux.c
-        src/linux.h
+    )
+elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
+    add_definitions(
+        -D_CRT_SECURE_NO_WARNINGS
+        -DPOKEMON_WINDOWS)
+
+    set(LIBPOKEMONSRC
+        ${LIBPOKEMONSRC}
+        src/windows.c
     )
 endif()
 

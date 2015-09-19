@@ -11,7 +11,7 @@ function Animal:new(o)
 end
 
 function Animal:speak()
-    print("I dont't known how")
+   return "I dont't known how"
 end
 
 local Dog = Animal:new()

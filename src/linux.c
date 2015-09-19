@@ -1,6 +1,6 @@
 /* For copyright information see the LICENSE file */
 
-#include "linux.h"
+#include "platform.h"
 #include "buffer.h"
 
 
@@ -14,10 +14,11 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 
-
+static
 void
 safe_close(int fd)
 {
@@ -35,6 +36,7 @@ safe_close(int fd)
     }
 }
 
+static
 void
 safe_close_ref(int* fd)
 {
@@ -46,6 +48,42 @@ safe_close_ref(int* fd)
         *fd = -1;
     }
 }
+
+/* Callback function type for epoll events */
+typedef void (*epoll_callback_t)(void* ctx, struct epoll_event* ev);
+
+/* Structure for callback data */
+typedef struct _epoll_callback_data
+{
+    void* ctx;
+    epoll_callback_t callback;
+}
+epoll_callback_data;
+
+/* Creates the epoll event loop
+ *
+ * Return: The epoll file descriptor on success, else -1. Use errno for details.
+ *
+ */
+static int epoll_loop_create();
+
+/* Returns the epoll file descriptor. The value is -1 if no loop exists. */
+static int epoll_loop_get_fd();
+
+/* Decrement the loop reference cout
+ *
+ * If the ref count drops to 0 the epoll instance and other resources related
+ * to the loop will be freed.
+ *
+ */
+static void epoll_loop_destroy();
+
+/* Sets an event callback for a file descriptor
+ *
+ * Return: 0 on success; otherwise -1. Use errno to get details.
+ *
+ */
+static int epoll_loop_set_callback(int handle, epoll_callback_data callback);
 
 #define MinBufferSize  4
 
@@ -124,6 +162,7 @@ Exit:
     return NULL;
 }
 
+static
 int
 epoll_loop_create()
 {
@@ -160,6 +199,7 @@ Error:
     goto Exit;
 }
 
+static
 void
 epoll_loop_destroy()
 {
@@ -190,6 +230,7 @@ epoll_loop_destroy()
     pthread_mutex_unlock(&s_Lock);
 }
 
+static
 int
 epoll_loop_set_callback(int handle, epoll_callback_data callback)
 {
@@ -240,6 +281,7 @@ epoll_loop_set_callback(int handle, epoll_callback_data callback)
     return 0;
 }
 
+static
 int
 epoll_loop_get_fd()
 {
@@ -251,90 +293,9 @@ epoll_loop_get_fd()
 ////////////////////////////////////////////////////////////////////////////////
 static int s_SocketFd = -1;
 static int s_DebuggerFd = -1;
-//static buffer* s_ReceivedBuffer = NULL;
-//static buffer* s_SendBuffer = NULL;
-//static size_t s_SendBufferOffset = 0;
 static void* s_Ctx;
 static net_callback s_Callback;
 
-//static
-//ssize_t Send(int fd)
-//{
-//    ssize_t s = 0;
-//    size_t bytes;
-
-//    if (s_SendBuffer &&
-//        (bytes = buf_size(s_SendBuffer) - s_SendBufferOffset) > 0)
-//    {
-//Send:
-//        s = write(fd, s_SendBuffer->beg + s_SendBufferOffset, bytes);
-
-//        if (s < 0)
-//        {
-//            switch (errno)
-//            {
-//            case EAGAIN:
-//            case EINTR:
-//                goto Send;
-//            default:
-//                break;
-//            }
-//        }
-
-//        if (s > 0 && s_Callback)
-//        {
-//            s_Callback(s_Ctx, NET_EVENT_SEND, NULL, s);
-//        }
-//    }
-
-//    return s;
-//}
-
-//static
-//ssize_t Receive(int fd)
-//{
-//    ssize_t r = 0;
-
-//    for (r = 1; s_ReceivedBuffer && r > 0; )
-//    {
-//        if (!buf_left(s_ReceivedBuffer))
-//        {
-//            if (!buf_resize(s_ReceivedBuffer, buf_size(s_ReceivedBuffer) * 2))
-//            {
-//                errno = ENOMEM;
-//                return -1;
-//            }
-//        }
-
-//        r = read(fd, s_ReceivedBuffer->end, buf_left(s_ReceivedBuffer));
-
-//        if (r < 0)
-//        {
-//            switch (errno)
-//            {
-//            case EAGAIN:
-//            case EINTR:
-//            case EBADF:
-//                r = 0;
-//                break;
-//            default:
-//                return -1;
-//            }
-//        }
-
-//        if (r > 0)
-//        {
-//            s_ReceivedBuffer->end += r;
-
-//            if (s_Callback)
-//            {
-//                s_Callback(s_Ctx, NET_EVENT_RECEIVE);
-//            }
-//        }
-//    }
-
-//    return r;
-//}
 
 static
 void

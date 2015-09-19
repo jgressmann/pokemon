@@ -3,16 +3,19 @@
 #include "pokemon.h"
 #include "json.h"
 #include "buffer.h"
-
-#ifdef POKEMON_LINUX
-#include "linux.h"
-#endif
+#include "platform.h"
 
 extern "C" {
 #include <lua.h>
 #include <lauxlib.h>
 }
 
+#include <stdint.h>
+#include <inttypes.h>
+
+#include <cstdio>
+#include <cctype>
+#include <cstring>
 #include <thread>
 #include <atomic>
 #include <unordered_map>
@@ -26,8 +29,16 @@ extern "C" {
 #include <functional>
 #include <algorithm>
 #include <cstdarg>
-#include <arpa/inet.h>
+#include <memory>
 
+#ifdef POKEMON_LINUX
+#   include <arpa/inet.h>
+#endif
+
+#ifdef POKEMON_WINDOWS
+#   include <Winsock2.h>
+#   define snprintf _snprintf
+#endif
 
 #define POKEMON_UNUSED(x) (void)x
 #define POKEMON_DEBUG_MESSAGES 1
@@ -45,6 +56,7 @@ static const char POKEMONTABLE[] = "__PKMNT";
 static const char METATABLE[] = "__metatable";
 static const char ADDRESS[] = "__address";
 
+inline
 bool
 IsReservedKey(const char* key)
 {
@@ -383,7 +395,7 @@ GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& buffer, const char*& 
         int pops = 1;
         lua_rawgeti(L, -1, 1);
         ++pops;
-        const int entries = lua_tointeger(L, -1);
+        const int entries = (int)lua_tointeger(L, -1);
         if (entries) { // possible no one pushed a location
             lua_rawgeti(L, -2, entries + 1);
             ++pops;
@@ -738,7 +750,7 @@ DebuggerState::Mnemonize(int index, int handleTableIndex, int refTableIndex, int
     case LUA_TTHREAD: {
         lua_pushvalue(L, index);
         lua_rawget(L, refTableIndex);
-        handle = lua_tointeger(L, -1);
+        handle = (int)lua_tointeger(L, -1);
         lua_pop(L, 1);
         const bool seen = handle >= GlobalTableHandle;
         if (!seen) {
@@ -759,7 +771,7 @@ DebuggerState::Mnemonize(int index, int handleTableIndex, int refTableIndex, int
                 lua_pop(L, 1);
             }
             if (type == LUA_TTABLE) {
-                const bool isGlobalTable = lua_rawequal(L, globalTableIndex, index);
+                const bool isGlobalTable = lua_rawequal(L, globalTableIndex, index) != 0;
                 lua_pushnil(L);  /* first key */
                 while (lua_next(L, index) != 0) {
                     lua_pushvalue(L, -2);
@@ -1090,7 +1102,7 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
         if (bp.Condition.length()) {
             if (0 == luaL_loadstring(L, bp.Condition.c_str())) {
                 if (0 == lua_pcall(L, 0, 1, 0)) {
-                    bp.Hit = lua_toboolean(L, -1);
+                    bp.Hit = lua_toboolean(L, -1) != 0;
                 }
                 lua_pop(L, 1);
             }
@@ -1437,7 +1449,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex, int re
                 int metaTableHandle = 0;
                 if (lua_getmetatable(L, index)) {
                     lua_rawget(L, refTableIndex);
-                    metaTableHandle = lua_tointeger(L, -1);
+                    metaTableHandle = (int)lua_tointeger(L, -1);
                     lua_pop(L, 1);
                 }
                 const bool hasMetatable = metaTableHandle >= GlobalTableHandle;
@@ -1507,7 +1519,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex, int re
 
                         lua_pushvalue(L, -1);
                         lua_rawget(L, refTableIndex);
-                        int subhandle = lua_tointeger(L, -1);
+                        int subhandle = (int)lua_tointeger(L, -1);
                         lua_pop(L, 1);
 
                         if (subhandle == 0) {
@@ -1819,7 +1831,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
 
             lua_pushvalue(L, -1);
             lua_rawget(L, refTableIndex);
-            int handle = lua_tointeger(L, -1);
+            int handle = (int)lua_tointeger(L, -1);
             lua_pop(L, 1);
 
             if (!handle) {
@@ -1890,7 +1902,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
 
             lua_pushvalue(L, -1);
             lua_rawget(L, refTableIndex);
-            int handle = lua_tointeger(L, -1);
+            int handle = (int)lua_tointeger(L, -1);
             lua_pop(L, 1);
 
             if (!handle) {
@@ -2063,7 +2075,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                 } else { // no point
                     lua_pushvalue(L, -1);
                     lua_rawget(L, refTableIndex);
-                    const int tableHandle = lua_tointeger(L, -1);
+                    const int tableHandle = (int)lua_tointeger(L, -1);
                     lua_pop(L, 1);
                     int handle = 0;
                     if (equal) { // table assigment
@@ -2102,7 +2114,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                         }
                         lua_pushvalue(L, -1);
                         lua_rawget(L, refTableIndex);
-                        handle = lua_tointeger(L, -1);
+                        handle = (int)lua_tointeger(L, -1);
                         lua_pop(L, 1);
                         if (handle == 0) {
                             handle = m_NextValueHandle--;
@@ -2146,7 +2158,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                 } else {
                     lua_pushvalue(L, -1);
                     lua_rawget(L, refTableIndex);
-                    handle = lua_tointeger(L, -1);
+                    handle = (int)lua_tointeger(L, -1);
                     lua_pop(L, 1);
                     if (handle == 0) {
                         handle = m_NextValueHandle--;
@@ -3458,7 +3470,7 @@ luaD_push_location(lua_State* L, const char* filePath, int line) {
         it->second->Lock();
         GetPokemonTable(L, Pokemon_Locations);
         lua_rawgeti(L, -1, 1);
-        const int entries = lua_tointeger(L, -1);
+        const int entries = (int)lua_tointeger(L, -1);
         lua_pop(L, 1);
 
         // push value
@@ -3503,7 +3515,7 @@ luaD_pop_location(lua_State* L) {
     GetPokemonTable(L, Pokemon_Locations);
     // get size of table
     lua_rawgeti(L, -1, 1);
-    const int entries = lua_tonumber(L, -1);
+    const int entries = (int)lua_tointeger(L, -1);
     lua_pop(L, 1);
     if (entries == 0) {
         error = PKMN_E_NOT_REGISTERED;
