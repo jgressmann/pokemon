@@ -28,6 +28,9 @@ set(LIBPOKEMONSRC
     src/buffer.h
 )
 
+file(GLOB LUAFILES ${CMAKE_SOURCE_DIR}/*.js ${CMAKE_SOURCE_DIR}/*.lua)
+file(COPY ${LUAFILES} DESTINATION ${CMAKE_BINARY_DIR})
+
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     execute_process(COMMAND uname -a OUTPUT_VARIABLE ARCH)
     add_definitions(
@@ -72,5 +75,12 @@ target_link_libraries(pokemon-shared ${LUA51_LIBRARIES} ${POKEMON_EXTRA_LIBS})
 target_include_directories(pokemon-shared PUBLIC ${LUA51_INCLUDE_DIRS})
 set_target_properties(pokemon-shared PROPERTIES OUTPUT_NAME pokemon)
 
-add_executable(test src/test.cpp)
-target_link_libraries(test pokemon-shared)
+add_custom_target(copy)
+foreach(ConfigFile ${ConfigFiles})
+  add_custom_command(TARGET copy PRE_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E
+                         copy ${ConfigFile} $<TARGET_FILE_DIR:MyTarget>)
+endforeach()
+
+add_executable(example src/example.cpp)
+target_link_libraries(example pokemon-static)
