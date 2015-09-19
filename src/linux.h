@@ -1,5 +1,7 @@
-#ifndef LINUX_H
-#define LINUX_H
+/* For copyright information see the LICENSE file */
+
+#ifndef LINUX_039939933_H
+#define LINUX_039939933_H
 
 #include <sys/epoll.h>
 

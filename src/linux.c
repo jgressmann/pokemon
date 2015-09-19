@@ -1,3 +1,5 @@
+/* For copyright information see the LICENSE file */
+
 #include "linux.h"
 #include "buffer.h"
 

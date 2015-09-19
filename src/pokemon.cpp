@@ -1,3 +1,5 @@
+/* For copyright information see the LICENSE file */
+
 #include "pokemon.h"
 #include "json.h"
 #include "buffer.h"

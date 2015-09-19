@@ -1,3 +1,5 @@
+/* For copyright information see the LICENSE file */
+
 #ifndef POKEMON_H
 #define POKEMON_H
 

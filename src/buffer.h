@@ -1,3 +1,5 @@
+/* See buffer.c for license information */
+
 #ifndef BUFFER_94993292_H
 #define BUFFER_94993292_H
 
