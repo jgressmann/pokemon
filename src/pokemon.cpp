@@ -31,6 +31,7 @@ extern "C" {
 namespace
 {
 static const char POKEMONTABLE[] = "__PKMNT";
+static const char METATABLE[] = "__metatable";
 
 
 inline
@@ -69,7 +70,7 @@ const int ValueHandleOffset = 1 << 16;
 inline
 bool
 IsValueHandle(int x) {
-    return x >= ValueHandleOffset;
+    return x <= -1;
 }
 
 inline
@@ -671,7 +672,7 @@ DebuggerState::LuaValue::fromStack(lua_State* L, int index, int handle) {
 
 int
 DebuggerState::GetThis(lua_Debug& dbg) {
-    return -1;
+    return m_NextValueHandle--;
 
 
     const bool isC = strcmp("C", dbg.what) == 0;
@@ -800,7 +801,8 @@ DebuggerState::Mnemonize() {
 
     m_References.clear();
     m_Values.clear();
-    m_NextValueHandle = ValueHandleOffset;
+    //m_NextValueHandle = ValueHandleOffset;
+    m_NextValueHandle = -1;
 
     lua_getglobal(L, POKEMONTABLE);
     // clear old tables
@@ -1291,7 +1293,7 @@ DebuggerState::WriteRefs(buffer* response, int handleTableIndex) {
     while (!m_HandlesToExpose.empty()) {
         auto handle = m_HandlesToExpose.back();
         m_HandlesToExpose.pop_back();
-        assert(handle > 0);
+        assert(handle != 0);
         if (IsObjectHandle(handle)) {
             if ((size_t)handle >= m_ExposedObjects.size()) {
                 m_ExposedObjects.resize(handle + 1);
@@ -1311,7 +1313,7 @@ DebuggerState::WriteRefs(buffer* response, int handleTableIndex) {
                 }
             }
         } else {
-            const size_t index = handle - ValueHandleOffset;
+            const size_t index = -handle + 1;
             if ((size_t)index >= m_ExposedValues.size()) {
                 m_ExposedValues.resize(index + 1);
             }
@@ -1446,7 +1448,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                 if (!GetJsonString(reference.Name.c_str(), reference.Name.length())) {
                     return false;
                 }
-                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\",\"className\":\"Function\"}", reference.Handle, m_JsonString->beg)) {
+                if (!WriteRaw(buf, "{\"handle\":%d,\"type\":\"function\",\"name\":\"%s\"}", reference.Handle, m_JsonString->beg)) {
                     return false;
                 }
                 break;
@@ -1471,7 +1473,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                     m_HandlesToExpose.push_back(reference.MetatableHandle);
 
                     firstMember = false;
-                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"metatable\"}", reference.MetatableHandle)) {
+                    if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", reference.MetatableHandle, METATABLE)) {
                         return false;
                     }
                 }
@@ -1517,10 +1519,9 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                         }
 
                         if (subhandle == 0) {
-                            subhandle = m_NextValueHandle++;
+                            subhandle = m_NextValueHandle--;
                             assert(IsValueHandle(subhandle));
                             m_Values.insert(std::make_pair(std::move(subhandle), std::move(LuaValue::fromStack(L, -1, subhandle))));
-                            //reference.SubHandles[subHandleIndex] = subhandle;
                             keyIt->second = subhandle;
                             //fprintf(stderr, "Assign %d for value subhandle in table %d, key %s\n", subhandle, handle, stdKey.c_str());
                         }
@@ -1528,7 +1529,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex) {
                         // FIXME: is there a way to not always expose evertying?
                         m_HandlesToExpose.push_back(subhandle);
 
-                        assert(subhandle > 0);
+                        assert(subhandle != 0);
 
                         if (!WriteRaw(buf, "{\"ref\":%d,\"name\":\"%s\"}", subhandle, m_JsonString->beg)) {
                             lua_pop(L, 2);
@@ -1805,9 +1806,10 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
     switch (scope) {
     case 0: { // local
         lua_pop(L, 1);
+        int handle = m_NextValueHandle--;
         if (!WriteRaw(response,
-"{\"index\":%d,\"frameIndex\":%d,\"type\":1,\"object\":{\"handle\":-1,"
-"\"type\":\"object\",\"properties\":[", scope, frame)) {
+"{\"index\":%d,\"frameIndex\":%d,\"type\":1,\"object\":{\"handle\":%d,"
+"\"type\":\"object\",\"properties\":[", scope, frame, handle)) {
             return false;
         }
 
@@ -1848,7 +1850,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
                 handle = it->second.Handle;
                 m_HandlesToExpose.emplace_back(handle);
             } else {
-                handle = m_NextValueHandle++;
+                handle = m_NextValueHandle--;
                 m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
                 m_HandlesToExpose.emplace_back(handle);
             }
@@ -1893,9 +1895,10 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
     case 1: { // closure
         assert(lua_isfunction(L, -1));
         LuaPopGuard function(L, 1);
+        int handle = m_NextValueHandle--;
         if (!WriteRaw(response,
-"{\"index\":%d,\"frameIndex\":%d,\"type\":3,\"object\":{\"handle\":-1,"
-"\"type\":\"object\",\"properties\":[", scope, frame)) {
+"{\"index\":%d,\"frameIndex\":%d,\"type\":3,\"object\":{\"handle\":%d,"
+"\"type\":\"object\",\"properties\":[", scope, frame, handle)) {
             return false;
         }
 
@@ -1917,7 +1920,7 @@ DebuggerState::ProcessScope(buffer* response, int64_t seq, json_value* args) {
                 handle = it->second.Handle;
                 m_HandlesToExpose.emplace_back(handle);
             } else {
-                handle = m_NextValueHandle++;
+                handle = m_NextValueHandle--;
                 m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
                 m_HandlesToExpose.emplace_back(handle);
             }
@@ -2023,56 +2026,76 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
         return false;
     }
 
-    BufferPtr newExpression(buf_alloc(len + 32));
-    if (!newExpression) {
-        return false;
-    }
-
+    char* value = NULL;
     char* equal = (char*)strchr(expression, '=');
 
     if (equal) {
         // chop ;
         expression[--len] = 0;
-        char* value = equal + 1;
+        value = equal + 1;
         while (isspace(*value)) ++value;
         do {
             *equal-- = 0;
         } while (isspace(*equal));
+    }
 
-        char* point = strchr(expression, '.');
-        if (point) {
-            *point = 0;
-            bool found = false;
-            lua_Debug dbg;
-            const char* name = NULL;
+    char* point = strchr(expression, '.');
+    if (point) {
+        *point = 0;
+    }
 
-            for (int frame = 0; !found && lua_getstack(L, frame, &dbg); ++frame) {
-                for (int j = 1; !found && (name = lua_getlocal(L, &dbg, j)) != NULL; ++j) {
-                    assert(name);
+    bool local = true;
+    bool found = false;
+    lua_Debug dbg;
+    const char* name = NULL;
 
-                    if (strcmp(name, expression) == 0) {
-                        found = lua_istable(L, -1);
-                        break;
-                    } else {
-                        lua_pop(L, 1);
-                    }
-                }
+    for (int frame = 0; !found && lua_getstack(L, frame, &dbg); ++frame) {
+        for (int j = 1; !found && (name = lua_getlocal(L, &dbg, j)) != NULL; ++j) {
+            assert(name);
+
+            if (strcmp(name, expression) == 0) {
+                found = true;
+                break;
+            } else {
+                lua_pop(L, 1);
             }
+        }
+    }
 
-            if (found) {
-                LuaPopGuard g(L, 1);
-                expression = point + 1;
-                while (true) {
-                    if (lua_istable(L, -1)) {
-                        auto ptr = lua_topointer(L, -1);
-                        auto it = m_References.find(ptr);
-                        assert(it != m_References.end());
-                        auto& reference = it->second;
-                        point = strchr(expression, '.');
-                        if (point) {
-                            *point = 0;
-                            lua_pushstring(L, expression);
-                            lua_rawget(L, -2);
+    if (!found) {
+        lua_pushstring(L, expression);
+        lua_rawget(L, LUA_GLOBALSINDEX);
+        found = true;
+        local = false;
+    }
+
+    if (found) {
+        if (point) {
+            expression = point + 1;
+        }
+        LuaPopGuard g(L, 1);
+        while (true) {
+            if (lua_istable(L, -1)) {
+                auto ptr = lua_topointer(L, -1);
+                auto it = m_References.find(ptr);
+                assert(it != m_References.end());
+                auto& tableReference = it->second;
+                point = strchr(expression, '.');
+                if (point) {
+                    *point = 0;
+                    lua_pushstring(L, expression);
+                    lua_rawget(L, -2);
+                    lua_replace(L, -2); // replace table with value
+                    expression = point + 1;
+                } else { // no ppint
+                    int handle = 0;
+                    if (equal) { // table assigment
+                        if (strcmp(METATABLE, expression) == 0) {
+                            // Changing the meta table is not supported
+                            handle = m_NextValueHandle--;
+                            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+                                return false;
+                            }
                         } else {
                             // do table assignment
                             lua_pushstring(L, expression);
@@ -2080,105 +2103,149 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                             lua_rawset(L, -3);
 
                             // replace value
-                            auto keyIt = reference.SubHandles.find(expression);
-                            assert(keyIt != reference.SubHandles.end());
-                            auto valueHandle = keyIt->second;
-                            m_Values.erase(valueHandle);
-                            m_Values.insert(std::make_pair(std::move(valueHandle), std::move(LuaValue(valueHandle, value, strlen(value)))));
+                            auto keyIt = tableReference.SubHandles.find(expression);
+                            assert(keyIt != tableReference.SubHandles.end());
+                            handle = keyIt->second;
+                            m_Values.erase(handle);
+                            m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue(handle, value, strlen(value)))));
+                            m_HandlesToExpose.push_back(tableReference.Handle);
 
-
-                            if (!WriteRaw(response, "{\"ref\":%d}", reference.Handle)) {
+                            if (!WriteRaw(response, "{\"ref\":%d}", tableReference.Handle)) {
                                 return false;
                             }
-
-                            m_HandlesToExpose.push_back(reference.Handle);
-
-                            break;
                         }
-                    } else {
-                        if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+                    } else { // table lookup
+                        if (strcmp(METATABLE, expression) == 0) {
+                            lua_getmetatable(L, -1);
+                            lua_replace(L, -2); // replace table with value
+                        } else {
+                            lua_pushstring(L, expression);
+                            lua_rawget(L, -2);
+                            lua_replace(L, -2);
+                        }
+                        ptr = lua_topointer(L, -1);
+                        if (ptr) {
+                            auto it = m_References.find(ptr);
+                            assert(it != m_References.end());
+                            handle = it->second.Handle;
+                            m_HandlesToExpose.emplace_back(handle);
+                        } else {
+                            handle = m_NextValueHandle--;
+                            m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
+                            m_HandlesToExpose.emplace_back(handle);
+                        }
+
+                        if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
                             return false;
                         }
-                        break;
+                    }
+                    break;
+                }
+            } else { // no a table
+                int handle = 0;
+                if (equal) {
+                    if (local) {
+                        // assignment of non-table entries not supported
+                        handle = m_NextValueHandle--;
+                        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+                            return false;
+                        }
+                    } else { // global assignment
+                        if (strcmp(METATABLE, expression) == 0) {
+                            // Changing the meta table is not supported
+                            handle = m_NextValueHandle--;
+                            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+                                return false;
+                            }
+                        } else {
+                            lua_pushstring(L, expression);
+                            lua_pushstring(L, value);
+                            lua_rawset(L, LUA_GLOBALSINDEX);
+
+                            // don't expose global table?
+                            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+                                return false;
+                            }
+                        }
+                    }
+                } else {
+                    auto ptr = lua_topointer(L, -1);
+                    if (ptr) {
+                        auto it = m_References.find(ptr);
+                        assert(it != m_References.end());
+                        handle = it->second.Handle;
+                        m_HandlesToExpose.emplace_back(handle);
+                    } else {
+                        handle = m_NextValueHandle--;
+                        m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
+                        m_HandlesToExpose.emplace_back(handle);
+                    }
+
+                    if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
+                        return false;
                     }
                 }
-            } else {
-                if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-                    return false;
-                }
+                break;
             }
-        } else {
-            // non table assignment, unsupported for now
-            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-                return false;
-            }
+        } // while has point
+    } else { // not found
+        int handle = m_NextValueHandle--;
+        if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+            return false;
         }
 
+        fprintf(stderr, "%s: undef, handle %d\n", expression, handle);
+    }
 
-
-//        sprintf((char*)newExpression->beg, "%s=\"%s\"", expression, value);
-//        int error = luaL_loadstring(L, (char*)newExpression->beg);
-//        if (error) {
-//            lua_pop(L, 1); // error message
-//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-//                return false;
-//            }
-//        }
-//        error = lua_pcall(L, 0, LUA_MULTRET, 0);
-//        if (error) {
-//            lua_pop(L, 1);
-//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-//                return false;
-//            }
-//        } else {
-//            goto Eval;
-//            // some sort of debugger assignment, unsupported for now
-//            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-//                return false;
-//            }
-//        }
+#if 0
     } else { // no equal sign in expression
         const int oldTop = lua_gettop(L);
         sprintf((char*)newExpression->beg, "return %s", expression);
         int error = luaL_loadstring(L, (char*)newExpression->beg);
         if (error) {
             lua_pop(L, 1); // error message
-            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
+            int handle = m_NextValueHandle--;
+            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
                 return false;
             }
-        }
-        error = lua_pcall(L, 0, LUA_MULTRET, 0);
-        const int results = lua_gettop(L) - oldTop;
-        assert(results == 1);
-        LuaPopGuard g(L, 1);
-        if (error) {
-            if (!WriteRaw(response, "{\"handle\":-1,\"type\":\"undefined\"}")) {
-                return false;
-            }
-        } else {
-            int handle;
-            auto ptr = lua_topointer(L, -1);
-            if (ptr) {
-                const int index = lua_gettop(L);
-                lua_getglobal(L, "_G");
-                GetPokemonTable(L, Pokemon_Handles);
-                const int handleTableIndex = lua_gettop(L);
-                const int globalTableIndex = handleTableIndex-1;
-                LuaPopGuard g(L, 2);
-                handle = Mnemonize(index, handleTableIndex, globalTableIndex, NULL, 0);
-                m_HandlesToExpose.emplace_back(handle);
-            } else {
-                handle = m_NextValueHandle++;
-                m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
-                m_HandlesToExpose.emplace_back(handle);
-            }
+        } else { // no load error
+            error = lua_pcall(L, 0, LUA_MULTRET, 0);
+            const int results = lua_gettop(L) - oldTop;
+            if (error) {
+                if (results) {
+                    lua_pop(L, results);
+                }
+                int handle = m_NextValueHandle--;
+                if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
+                    return false;
+                }
+            } else { // no call error
+                assert(results == 1);
+                lua_pop(L, results);
+                int handle;
+                auto ptr = lua_topointer(L, -1);
+                if (ptr) {
+                    const int index = lua_gettop(L);
+                    lua_getglobal(L, "_G");
+                    GetPokemonTable(L, Pokemon_Handles);
+                    const int handleTableIndex = lua_gettop(L);
+                    const int globalTableIndex = handleTableIndex-1;
+                    LuaPopGuard g(L, 2);
+                    handle = Mnemonize(index, handleTableIndex, globalTableIndex, NULL, 0);
+                    m_HandlesToExpose.emplace_back(handle);
+                } else {
+                    handle = m_NextValueHandle--;
+                    m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
+                    m_HandlesToExpose.emplace_back(handle);
+                }
 
-            if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
-                return false;
+                if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
+                    return false;
+                }
             }
         }
     } // no equal sign
-
+#endif
 
     if (!WriteRaw(response, ",\"refs\":[")) {
         return false;
@@ -2282,11 +2349,15 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
                                      3: Closure
                                      4: Catch >,
 */
+            int localHandle = m_NextValueHandle--;
+            int localClosureHandle = m_NextValueHandle--;
+
+
             if (!WriteRaw(response,
-"{\"index\":0,\"frameIndex\":%d,\"type\":1,\"object\":{\"handle\":-1}},"
-"{\"index\":1,\"frameIndex\":%d,\"type\":3,\"object\":{\"handle\":-1}},"
+"{\"index\":0,\"frameIndex\":%d,\"type\":1,\"object\":{\"handle\":%d}},"
+"{\"index\":1,\"frameIndex\":%d,\"type\":3,\"object\":{\"handle\":%d}},"
 "{\"index\":2,\"frameIndex\":%d,\"type\":0,\"object\":{\"ref\":%d}}]",
-                          frame, frame, frame, GlobalTableHandle)) {
+                          frame, localHandle, frame, localClosureHandle, frame, GlobalTableHandle)) {
                 return false;
             }
 
