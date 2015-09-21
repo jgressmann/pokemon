@@ -1510,6 +1510,7 @@ DebuggerState::WriteObject(buffer* buf, int handle, int handleTableIndex, int re
                             return false;
                         }
                         lua_pop(L, 1); // name copy
+
                         if (!firstMember) {
                             if (!WriteRaw(buf, ",")) {
                                 lua_pop(L, 2);
@@ -2052,7 +2053,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
     }
 
     if (!found) {
-        lua_pushstring(L, expression);
+        lua_pushlstring(L, "_G", 2);
         lua_rawget(L, LUA_GLOBALSINDEX);
         found = true;
         local = false;
@@ -2119,8 +2120,9 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                         if (handle == 0) {
                             handle = m_NextValueHandle--;
                             m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
-                            m_HandlesToExpose.emplace_back(handle);
                         }
+
+                        m_HandlesToExpose.emplace_back(handle);
 
                         if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
                             return false;
