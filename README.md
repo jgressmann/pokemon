@@ -4,9 +4,7 @@ QtCreator.
 
 ## Usage
 To see an example how to integrate the debugger with your C/C++ code take a 
-look at 
-
->src/example.cpp 
+look at `src/example.cpp`.
 
 To connect QtCreator with to you Lua code, start your executable, set breakpoints 
 in your Lua code, and then attach the QML debugger via
