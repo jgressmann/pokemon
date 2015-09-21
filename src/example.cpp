@@ -54,7 +54,7 @@ main(int argc, char** argv) {
     // register inline Lua code with the deugger
     luaD_push_location(L, __FILE__, __LINE__ + 2);
     error = luaL_loadstring(L,
-        "dofile(\"/home/jean/build/pokemon/debug/lua.js\")"
+        "dofile(\"/home/jean/build/pokemon/debug/lua.lua\")"
     );
 
     if (error) {
