@@ -306,7 +306,6 @@ EPollConnectionDataHandler(void *ctx, struct epoll_event *ev)
     if (ev->events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
     {
         epoll_callback_data ecd;
-Close:
         memset(&ecd, 0, sizeof(ecd));
         epoll_loop_set_callback(ev->data.fd, ecd);
 
