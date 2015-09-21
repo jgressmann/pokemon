@@ -48,7 +48,9 @@ extern "C" {
     const char* const name = __PtrBuffer
 
 
-
+#if LUA_VERSION_NUM >= 502
+#   define lua_objlen lua_rawlen
+#endif
 
 namespace
 {
@@ -544,8 +546,8 @@ struct DebuggerState {
         m_Step.store(-1 << Step_Count_Shift | Step_Count);
     }
 public:
-    void Init() { m_LastLine = -1; m_Level = 0; lua_sethook(L, LuaHook, LUA_HOOKCALL | LUA_HOOKCOUNT | LUA_HOOKLINE | LUA_HOOKRET | LUA_HOOKTAILRET, 1); }
-    void Uninit() { lua_sethook(L, LuaHook, 0, 0); }
+    void Init();
+    void Uninit();
     void Connect();
     void Disconnect();
     void ProcessLuaStep(lua_Debug* dbg);
@@ -675,6 +677,24 @@ LuaValue::fromStack(lua_State* L, int index, int handle) {
         throw std::exception();
     }
 }
+
+
+void
+DebuggerState::Init() {
+    m_LastLine = -1;
+    m_Level = 0;
+#if LUA_VERSION_NUM >= 502
+    lua_sethook(L, LuaHook, LUA_HOOKCALL | LUA_HOOKCOUNT | LUA_HOOKLINE | LUA_HOOKRET | LUA_HOOKTAILCALL, 1);
+#else
+    lua_sethook(L, LuaHook, LUA_HOOKCALL | LUA_HOOKCOUNT | LUA_HOOKLINE | LUA_HOOKRET | LUA_HOOKTAILRET, 1);
+#endif
+}
+
+void
+DebuggerState::Uninit() {
+    lua_sethook(L, LuaHook, 0, 0);
+}
+
 
 int
 DebuggerState::GetThis(lua_Debug& dbg) {
@@ -2038,9 +2058,10 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
     bool found = false;
     lua_Debug dbg;
     const char* name = NULL;
+    int localNumber = 0;
 
     for (int frame = 0; !found && lua_getstack(L, frame, &dbg); ++frame) {
-        for (int j = 1; !found && (name = lua_getlocal(L, &dbg, j)) != NULL; ++j) {
+        for (localNumber = 1; !found && (name = lua_getlocal(L, &dbg, localNumber)) != NULL; ++localNumber) {
             assert(name);
 
             if (strcmp(name, expression) == 0) {
@@ -2053,8 +2074,7 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
     }
 
     if (!found) {
-        lua_pushlstring(L, "_G", 2);
-        lua_rawget(L, LUA_GLOBALSINDEX);
+        lua_getglobal(L, "_G");
         found = true;
         local = false;
     }
@@ -2134,11 +2154,23 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                 int handle = 0;
                 if (equal) {
                     if (local) {
+#if LUA_VERSION_NUM >= 502
+                        lua_pushstring(L, value);
+                        handle = m_NextValueHandle--;
+                        m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
+                        m_HandlesToExpose.emplace_back(handle);
+                        lua_setlocal(L, &dbg, localNumber);
+
+                        if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
+                            return false;
+                        }
+#else
                         // assignment of non-table entries not supported
                         handle = m_NextValueHandle--;
                         if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
                             return false;
                         }
+#endif
                     } else { // global assignment
                         if (IsReservedKey(expression)) {
                             // Changing the meta table is not supported
@@ -2147,10 +2179,17 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
                                 return false;
                             }
                         } else {
+#if LUA_VERSION_NUM >= 502
+                            lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
+                            lua_pushstring(L, expression);
+                            lua_pushstring(L, value);
+                            lua_rawset(L, -3);
+                            lua_pop(L, 1);
+#else
                             lua_pushstring(L, expression);
                             lua_pushstring(L, value);
                             lua_rawset(L, LUA_GLOBALSINDEX);
-
+#endif
                             // don't expose global table?
                             if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
                                 return false;

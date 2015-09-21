@@ -41,9 +41,12 @@ main(int argc, char** argv) {
     }
 
     // create Lua state and register packages
+#if LUA_VERSION_NUM >= 502
+    lua_State* L = luaL_newstate();
+#else
     lua_State* L = lua_open();
+#endif
     luaL_openlibs(L);
-
     // register a global C function with name 'sleep'
     lua_pushcfunction(L, xSleep);
     lua_setglobal(L, "sleep");
