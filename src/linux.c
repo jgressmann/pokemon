@@ -312,11 +312,6 @@ EPollConnectionDataHandler(void *ctx, struct epoll_event *ev)
         safe_close(ev->data.fd);
         s_DebuggerFd = -1;
 
-        // no mpre oin
-//        ev->data.fd = s_SocketFd;
-//        ev->events = EPOLLET | EPOLLIN;
-//        epoll_ctl(epoll_loop_get_fd(), EPOLL_CTL_MOD, s_SocketFd, ev);
-
         if (s_Callback)
         {
             s_Callback(s_Ctx, NET_EVENT_HANGUP);
@@ -327,23 +322,11 @@ EPollConnectionDataHandler(void *ctx, struct epoll_event *ev)
         int flags = 0;
         if (ev->events & EPOLLIN)
         {
-//            ssize_t r = Receive(ev->data.fd);
-
-//            if (r < 0)
-//            {
-//                goto Close;
-//            }
             flags |= NET_EVENT_RECEIVE;
         }
 
         if (ev->events & EPOLLOUT)
         {
-//            ssize_t s = Send(ev->data.fd);
-
-//            if (s < 0)
-//            {
-//                goto Close;
-//            }
             flags |= NET_EVENT_SEND;
         }
 
