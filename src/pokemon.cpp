@@ -251,28 +251,6 @@ Get(json_value* obj, const char* key, int64_t& result) {
     return false;
 }
 
-//static
-//bool
-//Get(json_value* obj, const char* key, bool& result) {
-//    auto value = GetKey(obj, key);
-//    if (value && value->type == json_boolean) {
-//        result = value->u.boolean != 0;
-//        return true;
-//    }
-//    return false;
-//}
-
-//static
-//bool
-//Get(json_value* obj, const char* key, std::string& result) {
-//    auto value = GetKey(obj, key);
-//    if (value && value->type == json_string) {
-//        result.assign(value->u.string.ptr, value->u.string.ptr + value->u.string.length);
-//        return true;
-//    }
-//    return false;
-//}
-
 template<typename T>
 static
 bool
@@ -285,20 +263,6 @@ Get(json_value* obj, const char* key,  T*& ptr, size_t& len) {
     }
     return false;
 }
-
-
-//int
-//GetPayloadChars(buffer *buf, const char *fmt, ...) {
-//    assert(buf);
-//    assert(fmt);
-//    assert(*fmt);
-
-//    va_list args;
-//    va_start (args, fmt);
-//    auto chars = vsnprintf(NULL, 0, fmt, args);
-//    va_end (args);
-//    return chars;
-//}
 
 template<typename T>
 bool
@@ -2223,56 +2187,6 @@ DebuggerState::ProcessEvaluate(buffer* response, int64_t seq, json_value* args) 
         fprintf(stderr, "%s: undef, handle %d\n", expression, handle);
     }
 
-#if 0
-    } else { // no equal sign in expression
-        const int oldTop = lua_gettop(L);
-        sprintf((char*)newExpression->beg, "return %s", expression);
-        int error = luaL_loadstring(L, (char*)newExpression->beg);
-        if (error) {
-            lua_pop(L, 1); // error message
-            int handle = m_NextValueHandle--;
-            if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
-                return false;
-            }
-        } else { // no load error
-            error = lua_pcall(L, 0, LUA_MULTRET, 0);
-            const int results = lua_gettop(L) - oldTop;
-            if (error) {
-                if (results) {
-                    lua_pop(L, results);
-                }
-                int handle = m_NextValueHandle--;
-                if (!WriteRaw(response, "{\"handle\":%d,\"type\":\"undefined\"}", handle)) {
-                    return false;
-                }
-            } else { // no call error
-                assert(results == 1);
-                lua_pop(L, results);
-                int handle;
-                auto ptr = lua_topointer(L, -1);
-                if (ptr) {
-                    const int index = lua_gettop(L);
-                    lua_getglobal(L, "_G");
-                    GetPokemonTable(L, Pokemon_Handles);
-                    const int handleTableIndex = lua_gettop(L);
-                    const int globalTableIndex = handleTableIndex-1;
-                    LuaPopGuard g(L, 2);
-                    handle = Mnemonize(index, handleTableIndex, globalTableIndex, NULL, 0);
-                    m_HandlesToExpose.emplace_back(handle);
-                } else {
-                    handle = m_NextValueHandle--;
-                    m_Values.insert(std::make_pair(std::move(handle), std::move(LuaValue::fromStack(L, -1, handle))));
-                    m_HandlesToExpose.emplace_back(handle);
-                }
-
-                if (!WriteRaw(response, "{\"ref\":%d}", handle)) {
-                    return false;
-                }
-            }
-        }
-    } // no equal sign
-#endif
-
     if (!WriteRaw(response, ",\"refs\":[")) {
         return false;
     }
@@ -2367,11 +2281,11 @@ DebuggerState::ProcessFrame(buffer* response, int64_t seq, json_value* args) {
 
             /*
              * 0: Global
-                                     1: Local
-                                     2: With
-                                     3: Closure
-                                     4: Catch >,
-*/
+             1: Local
+             2: With
+             3: Closure
+             4: Catch >,
+            */
             int localHandle = m_NextValueHandle--;
             int localClosureHandle = m_NextValueHandle--;
 
@@ -2727,19 +2641,6 @@ ReleaseReceiveData() {
     s_HelloReceived = false;
 }
 
-//void
-//PushToRequestQueue(JsonPtr&& json) {
-//    if (!s_Selected) {
-//        if (s_States.size() > 0) {
-//            s_Selected = s_States.begin()->second.get();
-//        }
-//    }
-
-//    if (s_Selected) {
-//        s_Selected->RequestQueue.push_back(std::move(json));
-//    }
-//}
-
 void
 ProcessSend() {
     while (true) {
@@ -2797,20 +2698,6 @@ Read4(buffer* buf, unsigned char*& p, T& value) {
     return true;
 }
 
-//bool
-//Read(buffer* buf, unsigned char*& p, wchar_t* str, size_t chars) {
-//    if (p + sizeof(*str) * chars > buf->end) {
-//        return false;
-//    }
-
-//    for (size_t i = 0; i < chars; ++i) {
-//        str[i] = p[0] << 8 | p[1];
-//        p += 2;
-//    }
-
-//    return true;
-//}
-
 template<typename T>
 bool
 Write4(buffer* buf, T value) {
@@ -2825,27 +2712,6 @@ Write4(buffer* buf, T value) {
 
     return true;
 }
-
-//bool
-//Write(buffer* buf, const wchar_t* str, size_t chars) {
-//    if (!buf_reserve(buf, chars * 2)) {
-//        return false;
-//    }
-
-//    for (size_t i = 0; i < chars; ++i) {
-//        *buf->end++ = (str[i] >> 8) & 0xff;
-//        *buf->end++ = (str[i] >> 0) & 0xff;
-//    }
-
-//    return true;
-//}
-
-
-//bool
-//Write(buffer* buf, const wchar_t* str) {
-//    return Write(buf, str, wcslen(str));
-//}
-
 
 bool
 Write(buffer* buf, const char* str, size_t chars) {
@@ -2865,7 +2731,6 @@ bool
 Write(buffer* buf, const char* str) {
     return Write(buf, str, strlen(str));
 }
-
 
 buffer*
 ToWString(buffer* buf, unsigned char*& p, int chars) {
@@ -3344,10 +3209,6 @@ int
 luaD_setup(int* argc, char** argv) {
     std::lock_guard<std::mutex> g(s_Lock);
     if (s_Counter++ == 0) {
-//        auto L =  lua_open();
-//        std::shared_ptr<DebuggerState> state(new DebuggerState(L));
-//        s_Selected = state.get();
-//        s_States.insert(std::make_pair(L, state));
         net_set_callback(NULL, NetCallback);
         auto error = net_listen(3768, 0);
         if (error < 0) {
@@ -3356,26 +3217,6 @@ luaD_setup(int* argc, char** argv) {
     }
 
     return 0;
-//    while (true) {
-//        auto x = s_SetupCounter.load();
-//        if (x > 0) {
-//            if (s_SetupCounter.compare_exchange_strong(x, x + 1)) {
-//                return PKMN_E_NONE;
-//            }
-//        } else if (x == 0) {
-//            if (s_SetupCounter.compare_exchange_strong(x, -1)) {
-//                try {
-//                    s_Thread = std::thread(LuaDebuggerLoop);
-//                } catch (std::exception& e) {
-//                    s_SetupCounter.store(0);
-//                    return PKMN_E_OUT_OF_RESOURCES;
-//                }
-//                s_SetupCounter.store(x + 1);
-//                return PKMN_E_NONE;
-//            }
-//        }
-//        std::this_thread::yield();
-//    }
 }
 
 extern "C"
@@ -3390,25 +3231,6 @@ luaD_teardown()
         ReleaseDataToSend();
         ReleaseReceiveData();
     }
-//    while (true) {
-//        auto x = s_SetupCounter.load();
-//        if (x > 0) {
-//            if (x == 1) {
-//                if (s_SetupCounter.compare_exchange_strong(x, -2)) {
-//                    Teardown();
-//                    s_SetupCounter.store(0);
-//                    return;
-//                }
-//            } else {
-//                if (s_SetupCounter.compare_exchange_strong(x, x - 1)) {
-//                    return;
-//                }
-//            }
-//        } else if (x == 0) {
-//            return; // never initialized
-//        }
-//        std::this_thread::yield();
-//    }
 }
 
 extern "C"
