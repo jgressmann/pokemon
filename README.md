@@ -9,7 +9,7 @@ look at `src/example.cpp`.
 To connect QtCreator with to you Lua code, simply mark your project as QML
 enabled and uncheck the 'Run in terminal' box. 
 
-> Projects -> <your project name> -> Build & Run -> <your kit> -> Run -> Enable QML
+> Projects -> 'your project name' -> Build & Run -> 'your kit' -> Run -> Enable QML
 
 Start your program in the debugger and place a breakpoint in any of your
 Lua files.
