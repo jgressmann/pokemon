@@ -6,15 +6,23 @@ QtCreator.
 To see an example how to integrate the debugger with your C/C++ code take a 
 look at `src/example.cpp`.
 
-To connect QtCreator with to you Lua code, start your executable, set breakpoints 
-in your Lua code, and then attach the QML debugger via
+To connect QtCreator with to you Lua code, simply mark your project as QML
+enabled and uncheck the 'Run in terminal' box. 
+
+> Projects -> <your project name> -> Build & Run -> <your kit> -> Run -> Enable QML
+
+Start your program in the debugger and place a breakpoint in any of your
+Lua files.
+
+If you must run your program in a terminal, you need to connect the QML
+debugger manually:
 
 > Debug -> Start Debugging -> Attach to QML port ...
 
-The debugger should stop on any of your Lua breakpoints.
+
 
 ## Caveats
-- Lua files need to be loaded using the full path the the file on disk for QtCreator to find them
+- Lua files need to be loaded using the full path to the file on disk for QtCreator to find them
 - You need to patch QtCreator to
     - take full advantage of debug expressions
     - permit breakpoints in .lua files else files need to end in .js or .qml
