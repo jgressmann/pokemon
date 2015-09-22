@@ -3209,10 +3209,46 @@ luaD_setup(int* argc, char** argv) {
     std::lock_guard<std::mutex> g(s_Lock);
     if (s_Counter++ == 0) {
         net_set_callback(NULL, NetCallback);
-        auto error = net_listen(3768, 0);
+        int port = 3768;
+        for (int i = 1; i < *argc; ++i) {
+            static const char ArgumentStart[] = "-qmljsdebugger=";
+            if (strncmp(argv[i], ArgumentStart, sizeof(ArgumentStart)-1) == 0) {
+                char* arg = argv[i];
+
+                // remove arg
+                for (int j = i + 1; j < *argc; ++j, ++i) {
+                    argv[i] = argv[j];
+                }
+                argv[i] = NULL;
+                --*argc;
+
+                // extract port
+                char* token = arg + sizeof(ArgumentStart)-1;
+                for (char* comma = strchr(token, ','); comma; token = comma + 1, comma = strchr(token, ',')) {
+                    *comma = 0;
+                    static const char PortStart[] = "port:";
+                    if (strncmp(PortStart, token, sizeof(PortStart)-1) == 0) {
+                        char* end = NULL;
+                        const char* str = token + sizeof(PortStart) - 1;
+                        int x = (int)strtol(str, &end, 10);
+                        if (end != NULL && end != str) {
+                            port = x;
+                        }
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        auto error = net_listen(port, 0);
         if (error < 0) {
             return PKMN_E_CHECK_SYSTEM_ERROR;
         }
+
+        // This print is required by QtCreator to find the port we are listening
+        // on and to initiate the connection
+        fprintf(stdout, "QML Debugger: Waiting for connection on port %d...\n", port);
+        fflush(stdout);
     }
 
     return 0;
