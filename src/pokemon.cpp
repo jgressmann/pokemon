@@ -41,7 +41,6 @@ extern "C" {
 #endif
 
 #define POKEMON_UNUSED(x) (void)x
-#define POKEMON_DEBUG_MESSAGES 1
 #define POKEMON_PTR_TO_STRING(p, name) \
     char __PtrBuffer[sizeof(void*)*3]; \
     snprintf(__PtrBuffer, sizeof(__PtrBuffer), sizeof(void*) == 4 ? ("0x%08" PRIxPTR) : ("0x%016" PRIxPTR), (uintptr_t)p); \
@@ -78,7 +77,7 @@ enum {
     Pokemon_Locations = 1,
     Pokemon_Handles,
     Pokemon_RefObjects,
-    Pokemon_Count = Pokemon_Handles
+    Pokemon_Count = Pokemon_RefObjects
 };
 
 void
