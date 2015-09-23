@@ -21,9 +21,9 @@ extern "C" {
 static
 int
 xSleep(lua_State* L) {
-    luaD_push_location(L, __FILE__, __LINE__);
+    (void)luaD_push_location(L, __FILE__, __LINE__);
     sleep(lua_tointeger(L, 1));
-    luaD_pop_location(L);
+    (void)luaD_pop_location(L);
     return 0;
 }
 
@@ -52,10 +52,10 @@ main(int argc, char** argv) {
     lua_setglobal(L, "sleep");
 
     // register Lua state with the debugger
-    luaD_register(L);
+    (void)luaD_register(L);
 
     // register inline Lua code with the deugger
-    luaD_push_location(L, __FILE__, __LINE__ + 2);
+    (void)luaD_push_location(L, __FILE__, __LINE__ + 2);
     error = luaL_loadstring(L,
         "dofile(\"/home/jean/build/pokemon/debug/lua.lua\")"
     );
@@ -71,7 +71,7 @@ main(int argc, char** argv) {
     }
 
     // unregister Lua state from the debugger
-    luaD_unregister(L);
+    (void)luaD_unregister(L);
 
     // tear down pokemon
     luaD_teardown();

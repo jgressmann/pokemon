@@ -2588,18 +2588,22 @@ DebuggerState::PruneDeadBreakpoints() {
     m_Breakpoints.store(newHead, std::memory_order_relaxed);
 }
 
-bool s_Connected;
-int s_Counter;
+struct Pokemon {
+    typedef std::unordered_map<lua_State*, std::shared_ptr<DebuggerState>> StateTable;
+    StateTable States;
+    std::shared_ptr<DebuggerState> Selected;
+    std::deque<buffer*> SendQueue;
+    buffer* ReceiveBuffer;
+    buffer* SendBuffer;
+    size_t SendBufferOffset;
+    uint32_t Packetsize = 0;
+    int Counter;
+    bool Connected;
+    bool HelloReceived;
+};
+
 std::mutex s_Lock;
-typedef std::unordered_map<lua_State*, std::shared_ptr<DebuggerState>> StateTable;
-StateTable s_States;
-std::shared_ptr<DebuggerState> s_Selected;
-std::deque<buffer*> s_SendQueue;
-buffer* s_ReceiveBuffer;
-buffer* s_SendBuffer;
-size_t s_SendBufferOffset;
-uint32_t s_Packetsize = 0;
-bool s_HelloReceived;
+std::unique_ptr<Pokemon> s_Pokemon;
 
 void ProcessSend();
 
@@ -2607,8 +2611,8 @@ void
 Send(buffer* buffer)
 {
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Connected) {
-        s_SendQueue.push_back(buffer);
+    if (s_Pokemon->Connected) {
+        s_Pokemon->SendQueue.push_back(buffer);
         ProcessSend();
     } else {
         buf_free(buffer);
@@ -2617,43 +2621,43 @@ Send(buffer* buffer)
 
 void
 ReleaseDataToSend() {
-    while (s_SendQueue.size()) {
-        buf_free(s_SendQueue.back());
-        s_SendQueue.pop_back();
+    while (s_Pokemon->SendQueue.size()) {
+        buf_free(s_Pokemon->SendQueue.back());
+        s_Pokemon->SendQueue.pop_back();
     }
-    if (s_SendBuffer) {
-        buf_free(s_SendBuffer);
-        s_SendBuffer = NULL;
+    if (s_Pokemon->SendBuffer) {
+        buf_free(s_Pokemon->SendBuffer);
+        s_Pokemon->SendBuffer = NULL;
     }
 
-    s_SendBufferOffset = 0;
+    s_Pokemon->SendBufferOffset = 0;
 }
 
 void
 ReleaseReceiveData() {
-    if (s_ReceiveBuffer) {
-        buf_free(s_ReceiveBuffer);
-        s_ReceiveBuffer = NULL;
+    if (s_Pokemon->ReceiveBuffer) {
+        buf_free(s_Pokemon->ReceiveBuffer);
+        s_Pokemon->ReceiveBuffer = NULL;
     }
 
-    s_Packetsize = 0;
-    s_HelloReceived = false;
+    s_Pokemon->Packetsize = 0;
+    s_Pokemon->HelloReceived = false;
 }
 
 void
 ProcessSend() {
     while (true) {
-        if (!s_SendBuffer) {
-            if (s_SendQueue.size() > 0) {
-                s_SendBuffer = s_SendQueue.front();
-                s_SendQueue.pop_front();
+        if (!s_Pokemon->SendBuffer) {
+            if (s_Pokemon->SendQueue.size() > 0) {
+                s_Pokemon->SendBuffer = s_Pokemon->SendQueue.front();
+                s_Pokemon->SendQueue.pop_front();
 #if POKEMON_DEBUG_MESSAGES
                 fprintf(stderr, "Send\n");
-                for (unsigned char* p = s_SendBuffer->beg; p != s_SendBuffer->end; ++p) {
+                for (unsigned char* p = s_Pokemon->SendBuffer->beg; p != s_Pokemon->SendBuffer->end; ++p) {
                     fprintf(stderr, "%02x", *p);
                 }
                 fprintf(stderr, "\n");
-                for (unsigned char* p = s_SendBuffer->beg; p != s_SendBuffer->end; ++p) {
+                for (unsigned char* p = s_Pokemon->SendBuffer->beg; p != s_Pokemon->SendBuffer->end; ++p) {
                     fprintf(stderr, "%c", *p);
                 }
                 fprintf(stderr, "\n");
@@ -2664,14 +2668,14 @@ ProcessSend() {
             }
         }
 
-        size_t size = buf_used(s_SendBuffer);
-        int sent = net_send((const char*)(s_SendBuffer->beg + s_SendBufferOffset), size - s_SendBufferOffset);
+        size_t size = buf_used(s_Pokemon->SendBuffer);
+        int sent = net_send((const char*)(s_Pokemon->SendBuffer->beg + s_Pokemon->SendBufferOffset), size - s_Pokemon->SendBufferOffset);
         if (sent > 0) {
-            s_SendBufferOffset += sent;
-            if (s_SendBufferOffset == size) {
-                buf_free(s_SendBuffer);
-                s_SendBuffer = NULL;
-                s_SendBufferOffset = 0;
+            s_Pokemon->SendBufferOffset += sent;
+            if (s_Pokemon->SendBufferOffset == size) {
+                buf_free(s_Pokemon->SendBuffer);
+                s_Pokemon->SendBuffer = NULL;
+                s_Pokemon->SendBufferOffset = 0;
             }
         else if (sent == 0) {
                 break;
@@ -2930,29 +2934,29 @@ MakeInterruptResponse() {
 void
 ProcessReceive() {
     while (true) {
-        if (s_Packetsize) {
-            if (buf_used(s_ReceiveBuffer) == s_Packetsize) {
+        if (s_Pokemon->Packetsize) {
+            if (buf_used(s_Pokemon->ReceiveBuffer) == s_Pokemon->Packetsize) {
 #if POKEMON_DEBUG_MESSAGES
                 fprintf(stderr, "Receive\n");
-                for (unsigned char* p = s_ReceiveBuffer->beg; p != s_ReceiveBuffer->end; ++p) {
+                for (unsigned char* p = s_Pokemon->ReceiveBuffer->beg; p != s_Pokemon->ReceiveBuffer->end; ++p) {
                     fprintf(stderr, "%02x", *p);
                 }
                 fprintf(stderr, "\n");
-                for (unsigned char* p = s_ReceiveBuffer->beg; p != s_ReceiveBuffer->end; ++p) {
+                for (unsigned char* p = s_Pokemon->ReceiveBuffer->beg; p != s_Pokemon->ReceiveBuffer->end; ++p) {
                     fprintf(stderr, "%c", *p);
                 }
                 fprintf(stderr, "\n");
                 fflush(stderr);
 #endif
-                unsigned char* p = s_ReceiveBuffer->beg;
+                unsigned char* p = s_Pokemon->ReceiveBuffer->beg;
                 uint32_t bytes;
 
-                if (!Read4(s_ReceiveBuffer, p, bytes)) {
+                if (!Read4(s_Pokemon->ReceiveBuffer, p, bytes)) {
                     net_close();
                     break;
                 }
 
-                BufferPtr wstr(ToWString(s_ReceiveBuffer, p, bytes / 2));
+                BufferPtr wstr(ToWString(s_Pokemon->ReceiveBuffer, p, bytes / 2));
                 if (!wstr) {
                     net_close();
                     break;
@@ -2960,23 +2964,23 @@ ProcessReceive() {
 
                 wchar_t* name =  (wchar_t*)wstr->beg;
 
-                if (s_HelloReceived) {
+                if (s_Pokemon->HelloReceived) {
                     if (wcscmp(name, L"V8Debugger") == 0) {
                         // next
                         // 4 bytes payload size
                         // 4 bytes key length in bytes
                         // bytes string (const char*) , e.g. V8DEBUG
-                        if (!Read4(s_ReceiveBuffer, p, bytes)) { // payload bytes
+                        if (!Read4(s_Pokemon->ReceiveBuffer, p, bytes)) { // payload bytes
                             net_close();
                             break;
                         }
 
                         uint32_t keyLen = 0;
-                        if (!Read4(s_ReceiveBuffer, p, keyLen)) {
+                        if (!Read4(s_Pokemon->ReceiveBuffer, p, keyLen)) {
                             net_close();
                             break;
                         }
-                        BufferPtr str(ToString(s_ReceiveBuffer, p, keyLen));
+                        BufferPtr str(ToString(s_Pokemon->ReceiveBuffer, p, keyLen));
                         if (!str) {
                             net_close();
                             break;
@@ -2984,27 +2988,27 @@ ProcessReceive() {
 
                         if (strcmp("V8DEBUG", (char*)str->beg) == 0) {
 
-                            if (!Read4(s_ReceiveBuffer, p, keyLen)) {
+                            if (!Read4(s_Pokemon->ReceiveBuffer, p, keyLen)) {
                                 net_close();
                                 break;
                             }
-                            str.reset(ToString(s_ReceiveBuffer, p, keyLen));
+                            str.reset(ToString(s_Pokemon->ReceiveBuffer, p, keyLen));
                             if (!str) {
                                 net_close();
                                 break;
                             }
 
                             if (strcmp("disconnect", (char*)str->beg) == 0) {
-                                if (s_Selected) {
-                                    s_Selected->Disconnect();
+                                if (s_Pokemon->Selected) {
+                                    s_Pokemon->Selected->Disconnect();
                                 }
-                                for (auto it = s_States.begin(); it != s_States.end(); ++it) {
+                                for (auto it = s_Pokemon->States.begin(); it != s_Pokemon->States.end(); ++it) {
                                     it->second->Resume();
                                 }
                                 net_close();
                             } else if (strcmp("connect", (char*)str->beg) == 0) {
-                                if (s_Selected) {
-                                    s_Selected->Connect();
+                                if (s_Pokemon->Selected) {
+                                    s_Pokemon->Selected->Connect();
                                 }
                                 buffer* response = MakeConnectResponse();
                                 if (!response) {
@@ -3012,13 +3016,13 @@ ProcessReceive() {
                                     break;
                                 }
 
-                                s_Packetsize = 0;
-                                s_SendQueue.push_back(response);
+                                s_Pokemon->Packetsize = 0;
+                                s_Pokemon->SendQueue.push_back(response);
                                 ProcessSend();
                             } else if (strcmp("v8request", (char*)str->beg) == 0) {
-                                if (p + 6 < s_ReceiveBuffer->end) {
+                                if (p + 6 < s_Pokemon->ReceiveBuffer->end) {
                                     p += 4;
-                                    size_t len = s_ReceiveBuffer->end - p;
+                                    size_t len = s_Pokemon->ReceiveBuffer->end - p;
                                     JsonPtr json(json_parse((char*)p, len));
                                     if (json) {
                                         if (json->type != json_object) {
@@ -3033,15 +3037,15 @@ ProcessReceive() {
                                             }
 
                                             // call into active state
-                                            response = s_Selected->ProcessRequest(response, std::move(json));
+                                            response = s_Pokemon->Selected->ProcessRequest(response, std::move(json));
                                             if (!response) {
                                                 net_close();
                                                 break;
                                             }
 
                                             response = EndV8DebuggerResponse(response);
-                                            s_Packetsize = 0;
-                                            s_SendQueue.push_back(response);
+                                            s_Pokemon->Packetsize = 0;
+                                            s_Pokemon->SendQueue.push_back(response);
                                             ProcessSend();
                                         }
                                     } else { // JSON parse failed
@@ -3059,12 +3063,12 @@ ProcessReceive() {
                                     break;
                                 }
 
-                                for (auto it = s_States.begin(); it != s_States.end(); ++it) {
+                                for (auto it = s_Pokemon->States.begin(); it != s_Pokemon->States.end(); ++it) {
                                     it->second->Break();
                                 }
 
-                                s_Packetsize = 0;
-                                s_SendQueue.push_back(response);
+                                s_Pokemon->Packetsize = 0;
+                                s_Pokemon->SendQueue.push_back(response);
                                 ProcessSend();
                             } else { // unknonwn 2nd level command
                                 net_close();
@@ -3085,12 +3089,12 @@ ProcessReceive() {
                     int32_t zero;
                     int32_t version;
 
-                    if (!Read4(s_ReceiveBuffer, p, zero)) {
+                    if (!Read4(s_Pokemon->ReceiveBuffer, p, zero)) {
                         net_close();
                         break;
                     }
 
-                    if (!Read4(s_ReceiveBuffer, p, version)) {
+                    if (!Read4(s_Pokemon->ReceiveBuffer, p, version)) {
                         net_close();
                         break;
                     }
@@ -3110,19 +3114,19 @@ ProcessReceive() {
                         break;
                     }
 
-                    s_Packetsize = 0;
-                    s_HelloReceived = true;
+                    s_Pokemon->Packetsize = 0;
+                    s_Pokemon->HelloReceived = true;
 
-                    s_SendQueue.push_back(response);
+                    s_Pokemon->SendQueue.push_back(response);
                     ProcessSend();
 
 //                    fprintf(stdout, "Hello response sent\n");
 //                    fflush(stdout);
                 }
             } else {
-                int recv = net_receive((char*)s_ReceiveBuffer->end, s_Packetsize - buf_used(s_ReceiveBuffer));
+                int recv = net_receive((char*)s_Pokemon->ReceiveBuffer->end, s_Pokemon->Packetsize - buf_used(s_Pokemon->ReceiveBuffer));
                 if (recv > 0) {
-                    s_ReceiveBuffer->end += recv;
+                    s_Pokemon->ReceiveBuffer->end += recv;
                 } else if (recv == 0) {
                     break;
                 } else {
@@ -3131,33 +3135,33 @@ ProcessReceive() {
                 }
             }
         } else {
-            int recv = net_receive((char*)&s_Packetsize, sizeof(s_Packetsize));
+            int recv = net_receive((char*)&s_Pokemon->Packetsize, sizeof(s_Pokemon->Packetsize));
             if (recv == 0) {
                 break;
             } else if (recv < 0) {
                 net_close();
                 break;
-            } else if (recv != (int)sizeof(s_Packetsize)) {
+            } else if (recv != (int)sizeof(s_Pokemon->Packetsize)) {
                 net_close();
                 break;
             } else {
                 // Sure why not Qt people
-                if (s_Packetsize <= 4) { // wrong packet
+                if (s_Pokemon->Packetsize <= 4) { // wrong packet
                     net_close();
                     break;
                 } else {
-                    s_Packetsize -= sizeof(s_Packetsize);
-                    if (!s_ReceiveBuffer) {
-                        s_ReceiveBuffer = buf_alloc(s_Packetsize);
-                        if (!s_ReceiveBuffer) {
+                    s_Pokemon->Packetsize -= sizeof(s_Pokemon->Packetsize);
+                    if (!s_Pokemon->ReceiveBuffer) {
+                        s_Pokemon->ReceiveBuffer = buf_alloc(s_Pokemon->Packetsize);
+                        if (!s_Pokemon->ReceiveBuffer) {
                             net_close();
                             break;
                         }
-                    } else if (!buf_resize(s_ReceiveBuffer, s_Packetsize)) {
+                    } else if (!buf_resize(s_Pokemon->ReceiveBuffer, s_Pokemon->Packetsize)) {
                         net_close();
                         break;
                     }
-                    buf_clear(s_ReceiveBuffer);
+                    buf_clear(s_Pokemon->ReceiveBuffer);
                 }
             }
         }
@@ -3168,11 +3172,11 @@ void
 NetCallback(void* ctx, int events) {
     std::lock_guard<std::mutex> g(s_Lock);
     if (events & NET_EVENT_HANGUP) {
-        s_Connected = false;
+        s_Pokemon->Connected = false;
         ReleaseDataToSend();
         ReleaseReceiveData();
     } else if (events & NET_EVENT_CONNECT) {
-        s_Connected = true;
+        s_Pokemon->Connected = true;
     } else {
         if (events & NET_EVENT_SEND) {
             ProcessSend();
@@ -3189,9 +3193,9 @@ LuaHook(lua_State* L, lua_Debug* d) {
     {
         std::lock_guard<std::mutex> g(s_Lock);
 
-        StateTable::iterator it = s_States.find(L);
+        Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
 
-        if (it != s_States.end()) {
+        if (it != s_Pokemon->States.end()) {
             state = it->second;
         }
     }
@@ -3205,9 +3209,12 @@ LuaHook(lua_State* L, lua_Debug* d) {
 
 extern "C"
 int
-luaD_setup(int* argc, char** argv) {
+pokemon_setup(int* argc, char** argv) {
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Counter++ == 0) {
+    if (!s_Pokemon) {
+        s_Pokemon.reset(new Pokemon());
+    }
+    if (s_Pokemon->Counter++ == 0) {
         net_set_callback(NULL, NetCallback);
         int port = 3768;
         for (int i = 1; i < *argc; ++i) {
@@ -3242,6 +3249,7 @@ luaD_setup(int* argc, char** argv) {
         }
         auto error = net_listen(port, 0);
         if (error < 0) {
+            s_Pokemon.reset();
             return PKMN_E_CHECK_SYSTEM_ERROR;
         }
 
@@ -3251,37 +3259,38 @@ luaD_setup(int* argc, char** argv) {
         fflush(stdout);
     }
 
-    return 0;
+    return PKMN_E_NONE;
 }
 
 extern "C"
 void
-luaD_teardown()
+pokemon_teardown()
 {
     std::lock_guard<std::mutex> g(s_Lock);
-    if (--s_Counter == 0) {
+    if (s_Pokemon && --s_Pokemon->Counter == 0) {
         net_set_callback(NULL, NULL);
         net_hangup();
-        s_Selected = NULL;
+        s_Pokemon->Selected.reset();
         ReleaseDataToSend();
         ReleaseReceiveData();
+        s_Pokemon.reset();
     }
 }
 
 extern "C"
 int
-luaD_register(lua_State* L) {
+pokemon_register(lua_State* L) {
     if (!L) {
         return PKMN_E_INVALID_PARAM;
     }
 
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Counter <= 0) {
+    if (!s_Pokemon) {
         return PKMN_E_NOT_INITIALIZED;
     }
 
-    StateTable::iterator it = s_States.find(L);
-    if (it != s_States.end()) {
+    Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
+    if (it != s_Pokemon->States.end()) {
         return PKMN_E_ALREADY_REGISTERED;
     }
 
@@ -3290,9 +3299,9 @@ luaD_register(lua_State* L) {
 
         state->Lock();
 
-        s_States.insert(std::make_pair(L, state));
-        if (!s_Selected) {
-            s_Selected = state;
+        s_Pokemon->States.insert(std::make_pair(L, state));
+        if (!s_Pokemon->Selected) {
+            s_Pokemon->Selected = state;
         }
 
         lua_newtable(L);
@@ -3315,28 +3324,28 @@ luaD_register(lua_State* L) {
 
 extern "C"
 int
-luaD_unregister(lua_State* L) {
+pokemon_unregister(lua_State* L) {
     if (!L) {
         return PKMN_E_INVALID_PARAM;
     }
 
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Counter <= 0) {
+    if (!s_Pokemon) {
         return PKMN_E_NOT_INITIALIZED;
     }
-    StateTable::iterator it = s_States.find(L);
-    if (it != s_States.end()) {
+    Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
+    if (it != s_Pokemon->States.end()) {
         return PKMN_E_NOT_REGISTERED;
     }
     std::shared_ptr<DebuggerState> state(it->second);
     state->Lock();
     state->Uninit();
-    s_States.erase(it);
-    if (s_Selected == state) {
-        s_Selected.reset();
+    s_Pokemon->States.erase(it);
+    if (s_Pokemon->Selected == state) {
+        s_Pokemon->Selected.reset();
     }
-    if (!s_Selected && s_States.size()) {
-        s_Selected = s_States.begin()->second;
+    if (!s_Pokemon->Selected && s_Pokemon->States.size()) {
+        s_Pokemon->Selected = s_Pokemon->States.begin()->second;
     }
     lua_pushnil(L);
     lua_setglobal(L, POKEMONTABLE);
@@ -3346,17 +3355,17 @@ luaD_unregister(lua_State* L) {
 
 extern "C"
 int
-luaD_push_location(lua_State* L, const char* filePath, int line) {
+pokemon_push_location(lua_State* L, const char* filePath, int line) {
     if (!L || !filePath || !*filePath || line <= 0) {
         return PKMN_E_INVALID_PARAM;
     }
 
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Counter <= 0) {
+    if (!s_Pokemon) {
         return PKMN_E_NOT_INITIALIZED;
     }
-    StateTable::iterator it = s_States.find(L);
-    if (it == s_States.end()) {
+    Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
+    if (it == s_Pokemon->States.end()) {
         return PKMN_E_NOT_REGISTERED;
     }
     int error = PKMN_E_NONE;
@@ -3395,17 +3404,17 @@ luaD_push_location(lua_State* L, const char* filePath, int line) {
 
 extern "C"
 int
-luaD_pop_location(lua_State* L) {
+pokemon_pop_location(lua_State* L) {
     if (!L) {
         return PKMN_E_INVALID_PARAM;
     }
 
     std::lock_guard<std::mutex> g(s_Lock);
-    if (s_Counter <= 0) {
+    if (!s_Pokemon) {
         return PKMN_E_NOT_INITIALIZED;
     }
-    StateTable::iterator it = s_States.find(L);
-    if (it == s_States.end()) {
+    Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
+    if (it == s_Pokemon->States.end()) {
         return PKMN_E_NOT_REGISTERED;
     }
     int error = PKMN_E_NONE;
@@ -3429,4 +3438,25 @@ luaD_pop_location(lua_State* L) {
     lua_pop(L, 1);
     it->second->Unlock();
     return error;
+}
+
+extern "C"
+int
+pokemon_select(lua_State* L) {
+    if (!L) {
+        return PKMN_E_INVALID_PARAM;
+    }
+
+    std::lock_guard<std::mutex> g(s_Lock);
+    if (!s_Pokemon) {
+        return PKMN_E_NOT_INITIALIZED;
+    }
+    Pokemon::StateTable::iterator it = s_Pokemon->States.find(L);
+    if (it == s_Pokemon->States.end()) {
+        return PKMN_E_NOT_REGISTERED;
+    }
+
+    s_Pokemon->Selected = it->second;
+
+    return PKMN_E_NONE;
 }

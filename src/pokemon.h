@@ -18,25 +18,52 @@ typedef struct lua_State lua_State;
 #define PKMN_E_CHECK_SYSTEM_ERROR       -5
 #define PKMN_E_NOT_REGISTERED           -6
 
+#ifdef POKEMON_NDEBUG
+
+#define luaD_setup(...) PKMN_E_NONE
+#define luaD_teardown(...)
+#define luaD_register(...) PKMN_E_NONE
+#define luaD_unregister(...) PKMN_E_NONE
+#define luaD_push_location(...) PKMN_E_NONE
+#define luaD_pop_location(...) PKMN_E_NONE
+#define luaD_select(...) PKMN_E_NONE
+
+#else
+
+#define luaD_setup(...) pokemon_setup(__VA_ARGS__)
+#define luaD_teardown(...) pokemon_teardown(__VA_ARGS__)
+#define luaD_register(...) pokemon_register(__VA_ARGS__)
+#define luaD_unregister(...) pokemon_unregister(__VA_ARGS__)
+#define luaD_push_location(...) pokemon_push_location(__VA_ARGS__)
+#define luaD_pop_location(...) pokemon_pop_location(__VA_ARGS__)
+#define luaD_select(...) pokemon_select(__VA_ARGS__)
+
 int
-luaD_setup(int* argc, char** argv);
+pokemon_setup(int* argc, char** argv);
 
 void
-luaD_teardown();
+pokemon_teardown();
 
 int
-luaD_register(lua_State* L);
+pokemon_register(lua_State* L);
 
 int
-luaD_unregister(lua_State* L);
+pokemon_unregister(lua_State* L);
 
 int
-luaD_push_location(lua_State* L, const char* filePath, int line);
+pokemon_push_location(lua_State* L, const char* filePath, int line);
 
 int
-luaD_pop_location(lua_State* L);
+pokemon_pop_location(lua_State* L);
+
+int
+pokemon_select(lua_State* L);
+
+
+#endif
 
 #ifdef __cplusplus
 }
 #endif
+
 #endif // POKEMON_H
