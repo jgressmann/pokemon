@@ -3,6 +3,8 @@
 #ifndef PLATFORM_039939933_H
 #define PLATFORM_039939933_H
 
+#include "buffer.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,6 +22,9 @@ int net_hangup();
 void net_set_callback(void* ctx, net_callback callback);
 int net_send(const char* buffer, int bytes);
 int net_receive(char* buffer, int bytes);
+
+int is_absolute_file_path(const char* filePath);
+int to_absolute_file_path(const char** filePath, buffer** filePathBuffer);
 
 #ifdef __cplusplus
 }

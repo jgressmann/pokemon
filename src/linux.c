@@ -583,3 +583,84 @@ net_receive(char* buffer, int bytes) {
     return re;
 }
 
+int
+is_absolute_file_path(const char* filePath) {
+    return filePath && *filePath == '/';
+}
+
+int
+to_absolute_file_path(const char** filePath, buffer** filePathBuffer) {
+    int result = 1;
+    int fd = -1;
+    int allocated = 0;
+
+    assert(filePath);
+    assert(filePathBuffer);
+
+
+    if (is_absolute_file_path(*filePath)) {
+        goto Exit;
+    }
+
+    if (!*filePathBuffer) {
+        *filePathBuffer = buf_alloc(strlen(*filePath) * 2);
+        if (!*filePathBuffer) {
+            goto Error;
+        }
+        allocated = 1;
+    }
+
+    fd = open(*filePath, O_CLOEXEC | O_PATH);
+    if (fd == -1) {
+        goto Error;
+    }
+
+    char fdPath[32];
+    snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);\
+    int previousBytes = -1;
+    int bytes = -1;
+    while (1) {
+        size_t size = buf_size(*filePathBuffer);
+        assert(size);
+        bytes = readlink(fdPath, (char*)(*filePathBuffer)->beg, size);
+        if (bytes < 0) {
+            int e = errno;
+            goto Error;
+        }
+
+        if (bytes == previousBytes) {
+            break;
+        }
+
+        previousBytes = bytes;
+
+        buf_resize(*filePathBuffer, 2 * bytes);
+    }
+
+    if (buf_size(*filePathBuffer) == bytes) {
+        if (!buf_reserve(*filePathBuffer, 1)) {
+            goto Error;
+        }
+    }
+
+    (*filePathBuffer)->end = (*filePathBuffer)->beg + bytes;
+    *(*filePathBuffer)->end = 0;
+    *filePath = (char*)(*filePathBuffer)->beg;
+
+Exit:
+    if (fd >= 0) {
+        safe_close(fd);
+    }
+
+    return result;
+
+Error:
+    result = 0;
+
+    if (allocated) {
+        buf_free(*filePathBuffer);
+        *filePathBuffer = NULL;
+    }
+    goto Exit;
+}
+

@@ -348,7 +348,7 @@ WritePayload(buffer *buf, const char *fmt, ...) {
 }
 
 bool
-GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& buffer, const char*& filePath, int& line) {
+GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& filePathBuffer, const char*& filePath, int& line) {
     const int before = lua_gettop(L);
     bool result = true;
     line = dbg.currentline;
@@ -369,11 +369,11 @@ GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& buffer, const char*& 
             const char* colon = strchr(location, ':');
             assert(colon);
             const size_t filePathLen = len - (colon - location) - 1;
-            buffer.reset(buf_alloc(filePathLen + 1));
-            if (buffer.get()) {
-                memcpy(buffer->beg, colon + 1, filePathLen);
-                buffer->beg[filePathLen] = 0;
-                filePath = (char*)buffer->beg;
+            filePathBuffer.reset(buf_alloc(filePathLen + 1));
+            if (filePathBuffer.get()) {
+                memcpy(filePathBuffer->beg, colon + 1, filePathLen);
+                filePathBuffer->beg[filePathLen] = 0;
+                filePath = (char*)filePathBuffer->beg;
                 if (line <= 0) {
                     line = 1;
                 }
@@ -381,8 +381,21 @@ GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& buffer, const char*& 
             } else {
                 result = false;
             }
+        } else {
+            result = false;
         }
         lua_pop(L, pops);
+    }
+
+    if (result) {
+        if (!is_absolute_file_path(filePath)) {
+            buffer* buf = NULL;
+            result = to_absolute_file_path(&filePath, &buf);
+            if (result) {
+                assert(buf);
+                filePathBuffer.reset(buf);
+            }
+        }
     }
 
     const int after = lua_gettop(L);
@@ -941,106 +954,6 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
         break;
     }
 
-
-    /*
-    ++m_LastLine ;
-
-    int spaces = 0;
-    char buf[256];
-    if (m_Stack.empty()) {
-        for (int frame = 0; lua_getstack(L, frame, dbg); ++frame, spaces += 2) {
-            if (!lua_getinfo(L, "lnS", dbg)) {
-                break;
-            }
-
-            const bool isMain = strcmp("main", dbg->what) == 0;
-            const bool isC = !isMain && strcmp("C", dbg->what) == 0;
-
-            if (!dbg->name) {
-                if (isC) {
-                    dbg->name = "C";
-                } else {
-                    dbg->name = "Lua entry";
-                }
-            }
-
-            GetLocation(L, *dbg, m_LuaStepFilePathBuffer, filePath, line);
-
-            snprintf(buf, sizeof(buf), "%20s %3s %6s %s(%d)", dbg->name, "", dbg->what, filePath, line);
-
-            m_Stack.emplace_back(buf);
-        }
-
-        std::reverse(m_Stack.begin(), m_Stack.end());
-    }
-
-    switch (dbg->event) {
-    default:
-        m_Stack.pop_back();
-    case LUA_HOOKCALL: {
-        if (!lua_getinfo(L, "lnS", dbg)) {
-            break;
-        }
-
-        const bool isMain = strcmp("main", dbg->what) == 0;
-        const bool isC = !isMain && strcmp("C", dbg->what) == 0;
-
-        if (!dbg->name) {
-            if (isC) {
-                dbg->name = "C";
-            } else {
-                dbg->name = "Lua entry";
-            }
-        }
-
-        GetLocation(L, *dbg, m_LuaStepFilePathBuffer, filePath, line);
-
-        snprintf(buf, sizeof(buf), "%20s %3s %6s %s(%d)", dbg->name, "", dbg->what, filePath, line);
-
-        m_Stack.emplace_back(buf);
-    } break;
-    case LUA_HOOKRET:
-        m_Stack.pop_back();
-        break;
-    }
-
-
-    for (size_t i = 0; i < m_Stack.size(); ++i) {
-        fprintf(stderr, "%04d %s\n", m_LastLine, m_Stack[m_Stack.size()-1 - i].c_str());
-    }
-
-    fprintf(stderr, "\n");
-    */
-
-//    for (int frame = 0; lua_getstack(L, frame, dbg); ++frame, spaces += 2) {
-//        if (!lua_getinfo(L, "lnS", dbg)) {
-//            break;
-//        }
-
-//        const bool isMain = strcmp("main", dbg->what) == 0;
-//        const bool isC = !isMain && strcmp("C", dbg->what) == 0;
-
-//        if (!dbg->name) {
-//            if (isC) {
-//                dbg->name = "C";
-//            } else {
-//                dbg->name = "Lua entry";
-//            }
-//        }
-
-//        GetLocation(L, *dbg, m_LuaStepFilePathBuffer, filePath, line);
-
-//        fprintf(stderr, "%04d %20s %3s %6s %s(%d)\n", m_LastLine, dbg->name, dbg->event == LUA_HOOKCALL ? "IN" : "OUT", dbg->what, filePath, line);
-
-//    }
-
-
-//    fprintf(stderr, "\n");
-
-//    return;
-
-
-
     if (!lua_getinfo(L, "lnS", dbg)) {
         return;
     }
@@ -1067,9 +980,6 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
     int count, action, breakPointHit, level;
     GetStep(count, action, breakPointHit, level);
     assert(!breakPointHit);
-
-
-
 
     m_Hits.clear();
 
@@ -1148,7 +1058,6 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
     if (stop) {
         BufferPtr event(MakeV8ResponseResponseHeader());
         if (event) {
-
             if (GetJsonString(filePath, strlen(filePath))) {
                 const size_t offset = buf_used(event.get());
                 if (Write4Net(event.get(), 0) && // sizeof following string
