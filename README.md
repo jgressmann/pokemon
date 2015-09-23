@@ -6,7 +6,7 @@ Pokemon is a library to link to your C/C++ program to debug Lua code using
 To see an example how to integrate the debugger with your C/C++ code take a 
 look at `src/example.cpp`.
 
-Connect QtCreator with to you Lua code by simply marking your project as 'QML
+Connect QtCreator to you Lua code by simply marking your project as 'QML
 enabled' and uncheck the 'Run in terminal' box. 
 
 > Projects -> 'your project name' -> Build & Run -> 'your kit' -> Run -> Enable QML
@@ -19,7 +19,10 @@ debugger manually:
 
 > Debug -> Start Debugging -> Attach to QML port ...
 
+### Disable debugging
 
+You can disable Lua debugging by defining `POKEMON_NDEBUG` in your project.
+If defined you no longer need to link to the pokemon static/shared library. 
 
 ## Caveats
 - Lua files need to be loaded using the full path to the file on disk for QtCreator to find them
