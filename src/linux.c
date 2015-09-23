@@ -376,11 +376,6 @@ EPollAcceptHandler(void *ctx, struct epoll_event* ev)
                     ecd.callback = EPollConnectionDataHandler;
                     epoll_loop_set_callback(fd, ecd);
 
-//                    // no mpre oin
-//                    ev->data.fd = s_SocketFd;
-//                    ev->events = EPOLLET;
-//                    epoll_ctl(epoll_loop_get_fd(), EPOLL_CTL_MOD, s_SocketFd, ev);
-
                     s_DebuggerFd = fd;
 
                     if (s_Callback) {
