@@ -24,9 +24,11 @@ debugger manually:
 You can disable Lua debugging by defining `POKEMON_NDEBUG` in your project.
 If defined you no longer need to link to the pokemon static/shared library. 
 
+## Compatibility
+
+* You need QtCreator 3.5.1 or build it yourself using the current master branch.
+* The debugger has been tested with Lua 5.1 and 5.2 on Linux (x86_64).
+* The Windows implementation is a stub and doesn't work right now.
+
 ## Caveats
-- Lua files need to be loaded using the full path to the file on disk for QtCreator to find them
-- You need to patch QtCreator to
-    - take full advantage of debug expressions
-    - permit breakpoints in .lua files else files need to end in .js or .qml
 - QtCreator will always force evaluation of the 'this' expression which has no counterpart in Lua 
