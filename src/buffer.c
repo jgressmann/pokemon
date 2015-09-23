@@ -145,7 +145,7 @@ buf_alloc(size_t bytes) {
         return NULL;
     }
 
-   //fprintf(stderr, "out %p\n", buf);
+    //fprintf(stderr, "out %p %p\n", buf, buf->cap);
 
     return buf;
 }
@@ -158,8 +158,8 @@ buf_grow(buffer* buf, size_t bytes) {
     assert(buf);
 
     oldUsed = buf_used(buf);
-    oldSize = buf->cap - buf->beg;
-    newSize = Max((oldSize * 168) / 100, bytes);
+    oldSize = buf_size(buf);
+    newSize = Max((oldSize * 168) / 100, Max(bytes, sizeof(void*)));
     buf->beg = realloc(buf->beg, newSize);
     if (!buf->beg) {
         buf->cap = NULL;
@@ -177,8 +177,10 @@ extern
 void
 buf_free(buffer* buf)
 {
-    //fprintf(stderr, "in  %p\n", buf);
     assert(buf);
+
+    //fprintf(stderr, "in  %p %p\n", buf, buf->cap);
+
     buf_clear(buf);
 
     Push(buf);

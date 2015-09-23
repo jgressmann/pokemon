@@ -62,7 +62,7 @@ buf_free(buffer* buf);
 /* Evaluates to the number of unused bytes left in buffer. Always in range [0, capacity] */
 #define buf_left(buf) ((size_t)((buf)->cap - (buf)->end))
 /* Resizes the buffer to fit size bytes */
-#define buf_resize(buf, size) (buf_size(buf) < (size) ? buf_grow(buf, size) : 1)
+#define buf_resize(buf, size) ((buf_size(buf) < (size)) ? buf_grow(buf, size) : 1)
 /* Clears the buffer i.e. sets used to 0 */
 #define buf_clear(buf) buf->end = buf->beg
 /* Reserves space for size bytes at then end */
