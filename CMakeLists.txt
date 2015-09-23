@@ -13,8 +13,8 @@ else()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pipe -std=c++11 -Wall -fno-rtti")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -Wall")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pipe -fPIC -std=c++11 -Wall -fno-rtti")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -fPIC -Wall")
 endif(CMAKE_COMPILER_IS_GNUCXX)
 
 set(LIBPOKEMONSRC
@@ -82,15 +82,11 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
     )
 endif()
 
-add_library(pokemon-static STATIC ${LIBPOKEMONSRC})
-target_link_libraries(pokemon-static ${LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
-target_include_directories(pokemon-static PUBLIC ${LUA_INCLUDE_DIRS})
-set_target_properties(pokemon-static PROPERTIES OUTPUT_NAME pokemon)
+add_library(pokemon STATIC ${LIBPOKEMONSRC})
+target_link_libraries(pokemon ${LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
+target_include_directories(pokemon PUBLIC ${LUA_INCLUDE_DIRS})
 
-add_library(pokemon-shared SHARED ${LIBPOKEMONSRC})
-target_link_libraries(pokemon-shared ${LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
-target_include_directories(pokemon-shared PUBLIC ${LUA51_INCLUDE_DIRS})
-set_target_properties(pokemon-shared PROPERTIES OUTPUT_NAME pokemon)
-
-add_executable(example src/example.cpp)
-target_link_libraries(example pokemon-static)
+if(POKEMON_EXAMPLE)
+    add_executable(pokemon-example src/example.cpp)
+    target_link_libraries(pokemon-example pokemon)
+endif()
