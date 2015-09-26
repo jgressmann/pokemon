@@ -1,5 +1,5 @@
 # pokemon
-Pokemon is a library to link to your C/C++ program to debug Lua code using 
+Pokemon is a library to link to your C++ program to debug Lua code using 
 [QtCreator](http://www.qt.io/ide/).
 
 ## Usage
@@ -27,7 +27,7 @@ debugger manually:
 > Debug -> Start Debugging -> Attach to QML port ...
 
 ### Setup pokemon in your source code
-To see an example how to integrate the debugger with your C/C++ code take a 
+To see an example how to integrate the debugger with your C++ code take a 
 look at `src/example.cpp`.
 
 
