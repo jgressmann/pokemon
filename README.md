@@ -15,6 +15,9 @@ extensions for QML/JS and Lua:
 bash>export QTC_QMLDEBUGGER_FILEEXTENSIONS=".qml;.js;.lua"
 ```
 
+Restart QtCreator from the updated environment.
+
+
 ### Configure your project in QtCreator
 
 Setup your project to use be 'QML enabled' and uncheck the 'Run in terminal' box. 
