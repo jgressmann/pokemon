@@ -624,7 +624,6 @@ to_absolute_file_path(const char** filePath, buffer** filePathBuffer) {
         assert(size);
         bytes = readlink(fdPath, (char*)(*filePathBuffer)->beg, size);
         if (bytes < 0) {
-            int e = errno;
             goto Error;
         }
 
