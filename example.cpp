@@ -57,7 +57,7 @@ main(int argc, char** argv) {
     // register inline Lua code with the deugger
     (void)luaD_push_location(L, __FILE__, __LINE__ + 2);
     error = luaL_loadstring(L,
-        "dofile(\"example.lua\")"
+        "dofile(\"" POKEMON_LUA_SOURCE_DIR  "/example.lua\")"
     );
 
     if (error) {

@@ -27,8 +27,7 @@ set(LIBPOKEMONSRC
     src/platform.h
 )
 
-file(GLOB LUAFILES ${CMAKE_SOURCE_DIR}/*.lua)
-file(COPY ${LUAFILES} DESTINATION ${CMAKE_BINARY_DIR})
+
 
 # Set this to 1 to print messages sent to /received from QtCreator
 # to stderr
@@ -90,4 +89,5 @@ if(POKEMON_EXAMPLE)
     add_executable(pokemon-example example.cpp)
     target_link_libraries(pokemon-example pokemon)
     target_include_directories(pokemon-example PRIVATE src)
+    add_definitions(-DPOKEMON_LUA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
