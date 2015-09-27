@@ -32,7 +32,7 @@ debugger manually:
 
 ### Setup pokemon in your source code
 To see an example how to integrate the debugger with your C++ code take a 
-look at `src/example.cpp`.
+look at `example.cpp`.
 
 Start your program in the debugger and place a breakpoint in any of your
 Lua files.

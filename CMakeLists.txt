@@ -87,6 +87,7 @@ target_link_libraries(pokemon ${LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
 target_include_directories(pokemon PUBLIC ${LUA_INCLUDE_DIRS})
 
 if(POKEMON_EXAMPLE)
-    add_executable(pokemon-example src/example.cpp)
+    add_executable(pokemon-example example.cpp)
     target_link_libraries(pokemon-example pokemon)
+    target_include_directories(pokemon-example PRIVATE src)
 endif()
