@@ -44,7 +44,7 @@
 #   define membar() __sync_synchronize()
 #   define INLINE inline
 #   if __WORDSIZE == 32
-#       define cas __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
+#       define cas(ptr, new, old) __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
 #   else
 #       define cas(ptr, new, old) __sync_bool_compare_and_swap((__int128*)ptr, *((__int128_t*)old), *((__int128_t*)new))
 #   endif
