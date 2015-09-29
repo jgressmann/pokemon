@@ -12,7 +12,7 @@ Set the environment variable `QTC_QMLDEBUGGER_FILEEXTENSIONS` to the file
 extensions for QML/JS and Lua:
 
 ```
-bash>export QTC_QMLDEBUGGER_FILEEXTENSIONS=".qml;.js;.lua"
+bash$ export QTC_QMLDEBUGGER_FILEEXTENSIONS=".qml;.js;.lua"
 ```
 
 Restart QtCreator from the updated environment.
