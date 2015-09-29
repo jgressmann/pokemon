@@ -9,7 +9,9 @@ extern "C" {
 
 /* From lua.h */
 typedef struct lua_State lua_State;
+struct lua_Debug;
 
+/* Pokemon error codes */
 #define PKMN_E_NONE                      0
 #define PKMN_E_NOT_INITIALIZED          -1
 #define PKMN_E_OUT_OF_RESOURCES         -2
@@ -17,6 +19,19 @@ typedef struct lua_State lua_State;
 #define PKMN_E_ALREADY_REGISTERED       -4
 #define PKMN_E_CHECK_SYSTEM_ERROR       -5
 #define PKMN_E_NOT_REGISTERED           -6
+
+/* Pokemon location resolve callback */
+typedef int (*pokemon_location_callback_t)(
+    lua_State* L,
+    const lua_Debug* dbg,
+    const char** filePath,
+    int* line);
+
+/* Possible location callback results */
+#define PKMN_LC_NONE                    0 /* No location could be resolved */
+#define PKMN_LC_FALLBACK                1 /* Perform default location resolution */
+#define PKMN_LC_RESOLVED                2 /* Location resolved */
+
 
 #ifdef POKEMON_NDEBUG
 
@@ -27,6 +42,7 @@ typedef struct lua_State lua_State;
 #define luaD_push_location(...) PKMN_E_NONE
 #define luaD_pop_location(...) PKMN_E_NONE
 #define luaD_select(...) PKMN_E_NONE
+#define luaD_set_location_callback(...) PKMN_E_NONE
 
 #else
 
@@ -37,6 +53,7 @@ typedef struct lua_State lua_State;
 #define luaD_push_location(...) pokemon_push_location(__VA_ARGS__)
 #define luaD_pop_location(...) pokemon_pop_location(__VA_ARGS__)
 #define luaD_select(...) pokemon_select(__VA_ARGS__)
+#define luaD_set_location_callback(...) pokemon_set_location_callback(__VA_ARGS__)
 
 /* Setup pokemon library
  *
@@ -84,6 +101,16 @@ pokemon_pop_location(lua_State* L);
  * */
 int
 pokemon_select(lua_State* L);
+
+/* Set the function to call when pokemon needs to resolve a location
+ *
+ * Set to NULL to use default location resolution.
+ * If you set this to non-NULL your function must return one
+ * of the PKMN_LC_* values and if the location is resolved, set filePath
+ * and line to a (absolute file) path that can be opened by the debugger.
+ * */
+int
+pokemon_set_location_callback(pokemon_location_callback_t callback);
 
 
 #endif

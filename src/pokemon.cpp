@@ -57,6 +57,22 @@ static const char POKEMONTABLE[] = "__PKMNT";
 static const char METATABLE[] = "__metatable";
 static const char ADDRESS[] = "__address";
 
+
+struct JsonValueDeleter {
+    void operator()(json_value* p) {
+        json_value_free(p);
+    }
+};
+
+struct BufferDeleter {
+    void operator()(buffer* p) {
+        buf_free(p);
+    }
+};
+
+typedef std::unique_ptr<json_value, JsonValueDeleter> JsonPtr;
+typedef std::unique_ptr<buffer, BufferDeleter> BufferPtr;
+
 inline
 bool
 IsReservedKey(const char* key)
@@ -126,6 +142,9 @@ IsObjectHandle(int x) {
     return !IsValueHandle(x);
 }
 
+bool
+GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& filePathBuffer, const char*& filePath, int& line);
+
 class LuaPopGuard
 {
 public:
@@ -147,20 +166,7 @@ void Send(buffer* buffer);
 buffer* MakeV8ResponseResponseHeader();
 buffer* EndV8DebuggerResponse(buffer* buffer);
 
-struct JsonValueDeleter {
-    void operator()(json_value* p) {
-        json_value_free(p);
-    }
-};
 
-struct BufferDeleter {
-    void operator()(buffer* p) {
-        buf_free(p);
-    }
-};
-
-typedef std::unique_ptr<json_value, JsonValueDeleter> JsonPtr;
-typedef std::unique_ptr<buffer, BufferDeleter> BufferPtr;
 
 
 // Based on code (C) 2011 Joseph A. Adams (joeyadams3.14159@gmail.com)
@@ -347,64 +353,6 @@ WritePayload(buffer *buf, const char *fmt, ...) {
     return chars >= 0;
 }
 
-bool
-GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& filePathBuffer, const char*& filePath, int& line) {
-    const int before = lua_gettop(L);
-    bool result = true;
-    line = dbg.currentline;
-    filePath = "";
-    if (dbg.source[0] == '@') {
-        filePath = dbg.source + 1;
-    } else {
-        GetPokemonTable(L, Pokemon_Locations);
-        int pops = 1;
-        lua_rawgeti(L, -1, 1);
-        ++pops;
-        const int entries = (int)lua_tointeger(L, -1);
-        if (entries) { // possible no one pushed a location
-            lua_rawgeti(L, -2, entries + 1);
-            ++pops;
-            size_t len;
-            const char* location = lua_tolstring(L, -1, &len);
-            const char* colon = strchr(location, ':');
-            assert(colon);
-            const size_t filePathLen = len - (colon - location) - 1;
-            filePathBuffer.reset(buf_alloc(filePathLen + 1));
-            if (filePathBuffer.get()) {
-                memcpy(filePathBuffer->beg, colon + 1, filePathLen);
-                filePathBuffer->beg[filePathLen] = 0;
-                filePath = (char*)filePathBuffer->beg;
-                if (line <= 0) {
-                    line = 1;
-                }
-                line += strtol(location, NULL, 10);
-            } else {
-                result = false;
-            }
-        } else {
-            result = false;
-        }
-        lua_pop(L, pops);
-    }
-
-    if (result) {
-        if (!is_absolute_file_path(filePath)) {
-            buffer* buf = NULL;
-            result = to_absolute_file_path(&filePath, &buf);
-            if (result) {
-                assert(buf);
-                filePathBuffer.reset(buf);
-            }
-        }
-    }
-
-    const int after = lua_gettop(L);
-    assert(before == after);
-    POKEMON_UNUSED(before);
-    POKEMON_UNUSED(after);
-
-    return result;
-}
 
 enum {
     Cmd_Unknown = -1,
@@ -471,7 +419,7 @@ struct LuaValue {
 };
 
 
-struct DebuggerState {
+class DebuggerState {
     lua_State* L;
     JsonPtr CurrentMessage;
     int64_t OutputSequence;
@@ -500,27 +448,10 @@ struct DebuggerState {
     std::vector<int> m_Hits;
     std::string m_LastFile;
 
-    ~DebuggerState() {
-        Uninit();
-        for (auto* bp = m_Breakpoints.load(std::memory_order_relaxed); bp; ) {
-            auto x = bp;
-            bp = bp->Next;
-            delete x;
-        }
-    }
-    DebuggerState(lua_State* l) {
-        m_Breakpoints = nullptr;
-        L = l;
-        Running = false;
+public:
+    ~DebuggerState();
+    DebuggerState(lua_State* l);
 
-        m_NextValueHandle = ValueHandleOffset;
-        m_Frame = -1;
-        m_LastLine = -1;
-        m_Level = 0;
-        OutputSequence = 0;
-        m_NextBreakpointId = 0;
-        m_Step.store(-1 << Step_Count_Shift | Step_Count);
-    }
 public:
     void Init();
     void Uninit();
@@ -530,9 +461,16 @@ public:
     buffer* ProcessRequest(buffer* response, JsonPtr&& json);
     void Break();
     void Resume();
-    void Lock() { m_Lock.lock();}
-    void Unlock() { m_Lock.unlock();}
+    inline void Lock() { m_Lock.lock();}
+    inline void Unlock() { m_Lock.unlock();}
     void ResetHandleTables();
+
+private:
+    DebuggerState() = delete;
+    DebuggerState(const DebuggerState&) = delete;
+    DebuggerState& operator=(const DebuggerState&) = delete;
+    DebuggerState(DebuggerState&&) = delete;
+    DebuggerState& operator=(DebuggerState&&) = delete;
 private:
     void GetStep(int& count, int& action, int& breakpointHit, int& level) const;
     bool Unbreak();
@@ -568,6 +506,9 @@ private:
     void PruneDeadBreakpoints();
 };
 
+////////////////////////////////////////////////////////////////////////////////
+/// LuaValue
+////////////////////////////////////////////////////////////////////////////////
 LuaValue::~LuaValue() {
     if (LUA_TSTRING == (int)Type) {
         buf_free(Data.String);
@@ -652,6 +593,64 @@ LuaValue::fromStack(lua_State* L, int index, int handle) {
     default:
         throw std::exception();
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Pokemon
+////////////////////////////////////////////////////////////////////////////////
+struct Pokemon {
+    typedef std::unordered_map<lua_State*, std::shared_ptr<DebuggerState>> StateTable;
+    StateTable States;
+    std::shared_ptr<DebuggerState> Selected;
+    pokemon_location_callback_t LocationCallback;
+    std::deque<buffer*> SendQueue;
+    buffer* ReceiveBuffer;
+    buffer* SendBuffer;
+    size_t SendBufferOffset;
+    uint32_t Packetsize;
+    int Counter;
+    bool Connected;
+    bool HelloReceived;
+
+    Pokemon();
+};
+
+Pokemon::Pokemon() {
+    LocationCallback = nullptr;
+    ReceiveBuffer = nullptr;
+    SendBuffer = nullptr;
+    SendBufferOffset = 0;
+    Packetsize = 0;
+    Counter = 0;
+    Connected = false;
+    HelloReceived = false;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// DebuggerState
+////////////////////////////////////////////////////////////////////////////////
+
+DebuggerState::~DebuggerState() {
+    Uninit();
+    for (auto* bp = m_Breakpoints.load(std::memory_order_relaxed); bp; ) {
+        auto x = bp;
+        bp = bp->Next;
+        delete x;
+    }
+}
+
+DebuggerState::DebuggerState(lua_State* l) {
+    m_Breakpoints = nullptr;
+    L = l;
+    Running = true;
+
+    m_NextValueHandle = ValueHandleOffset;
+    m_Frame = -1;
+    m_LastLine = -1;
+    m_Level = 0;
+    OutputSequence = 0;
+    m_NextBreakpointId = 0;
+    m_Step.store(-1 << Step_Count_Shift | Step_Count);
 }
 
 
@@ -1082,10 +1081,8 @@ DebuggerState::ProcessLuaStep(lua_Debug* dbg) {
 
                         if (EndV8DebuggerResponse(event.get())) {
                             Send(event.release());
-
                         }
                     }
-
                 }
             }
         }
@@ -2497,22 +2494,100 @@ DebuggerState::PruneDeadBreakpoints() {
     m_Breakpoints.store(newHead, std::memory_order_relaxed);
 }
 
-struct Pokemon {
-    typedef std::unordered_map<lua_State*, std::shared_ptr<DebuggerState>> StateTable;
-    StateTable States;
-    std::shared_ptr<DebuggerState> Selected;
-    std::deque<buffer*> SendQueue;
-    buffer* ReceiveBuffer;
-    buffer* SendBuffer;
-    size_t SendBufferOffset;
-    uint32_t Packetsize = 0;
-    int Counter;
-    bool Connected;
-    bool HelloReceived;
-};
-
 std::mutex s_Lock;
 std::unique_ptr<Pokemon> s_Pokemon;
+
+bool
+GetDefaultLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& filePathBuffer, const char*& filePath, int& line) {
+    const int before = lua_gettop(L);
+    line = dbg.currentline;
+    filePath = "";
+    bool result = true;
+    if (dbg.source[0] == '@') {
+        filePath = dbg.source + 1;
+    } else {
+        GetPokemonTable(L, Pokemon_Locations);
+        int pops = 1;
+        lua_rawgeti(L, -1, 1);
+        ++pops;
+        const int entries = (int)lua_tointeger(L, -1);
+        if (entries) { // possible no one pushed a location
+            lua_rawgeti(L, -2, entries + 1);
+            ++pops;
+            size_t len;
+            const char* location = lua_tolstring(L, -1, &len);
+            const char* colon = strchr(location, ':');
+            assert(colon);
+            const size_t filePathLen = len - (colon - location) - 1;
+            filePathBuffer.reset(buf_alloc(filePathLen + 1));
+            if (filePathBuffer.get()) {
+                memcpy(filePathBuffer->beg, colon + 1, filePathLen);
+                filePathBuffer->beg[filePathLen] = 0;
+                filePath = (char*)filePathBuffer->beg;
+                if (line <= 0) {
+                    line = 1;
+                }
+                line += strtol(location, NULL, 10);
+            } else {
+                result = false;
+            }
+        } else {
+            result = false;
+        }
+        lua_pop(L, pops);
+    }
+
+    if (result) {
+        if (!is_absolute_file_path(filePath)) {
+            buffer* buf = NULL;
+            result = to_absolute_file_path(&filePath, &buf);
+            if (result) {
+                assert(buf);
+                filePathBuffer.reset(buf);
+            }
+        }
+    }
+
+    const int after = lua_gettop(L);
+    assert(before == after);
+    POKEMON_UNUSED(before);
+    POKEMON_UNUSED(after);
+
+    return result;
+}
+
+bool
+GetLocation(lua_State* L, const lua_Debug& dbg, BufferPtr& filePathBuffer, const char*& filePath, int& line) {
+    const int before = lua_gettop(L);
+    int locationResult = PKMN_LC_FALLBACK;
+    auto callback = s_Pokemon->LocationCallback;
+    if (callback) {
+        locationResult = callback(L, &dbg, &filePath, &line);
+    }
+
+    bool result = true;
+
+    switch (locationResult) {
+    case PKMN_LC_NONE:
+        result = false;
+        break;
+    case PKMN_LC_RESOLVED:
+        result = true;
+        break;
+    default:
+    case PKMN_LC_FALLBACK:
+        result = GetDefaultLocation(L, dbg, filePathBuffer, filePath, line);
+        break;
+    }
+
+    const int after = lua_gettop(L);
+    assert(before == after);
+    POKEMON_UNUSED(before);
+    POKEMON_UNUSED(after);
+
+    return result;
+}
+
 
 void ProcessSend();
 
@@ -3366,6 +3441,19 @@ pokemon_select(lua_State* L) {
     }
 
     s_Pokemon->Selected = it->second;
+
+    return PKMN_E_NONE;
+}
+
+extern "C"
+int
+pokemon_set_location_callback(pokemon_location_callback_t callback) {
+    std::lock_guard<std::mutex> g(s_Lock);
+    if (!s_Pokemon) {
+        return PKMN_E_NOT_INITIALIZED;
+    }
+
+    s_Pokemon->LocationCallback = callback;
 
     return PKMN_E_NONE;
 }

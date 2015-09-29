@@ -13,7 +13,7 @@ else()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pipe -fPIC -std=c++11 -Wall -fno-rtti")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pipe -fPIC -Wall -std=c++11 -fno-rtti")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -fPIC -Wall")
 endif(CMAKE_COMPILER_IS_GNUCXX)
 
