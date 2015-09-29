@@ -38,24 +38,50 @@ typedef struct lua_State lua_State;
 #define luaD_pop_location(...) pokemon_pop_location(__VA_ARGS__)
 #define luaD_select(...) pokemon_select(__VA_ARGS__)
 
+/* Setup pokemon library
+ *
+ * Call this once before any other pokemon function.
+ * */
 int
 pokemon_setup(int* argc, char** argv);
 
+/* Teardown pokemon library
+ *
+ * Call this once when you are finished using pokemon.
+ * */
 void
 pokemon_teardown();
 
+/* Register a Lua state with the debugger
+ *
+ * This permits to debug the Lua state once it's
+ * selected.
+ * */
 int
 pokemon_register(lua_State* L);
 
+/* Unregister a Lua state with the debugger */
 int
 pokemon_unregister(lua_State* L);
 
+/* Push a location (file, line) on the location stack
+ *
+ * This permits to break in code for which no
+ * file is known to Lua.
+ * */
 int
 pokemon_push_location(lua_State* L, const char* filePath, int line);
 
+/* Pop a location off the location stack
+ * */
 int
 pokemon_pop_location(lua_State* L);
 
+/* Select the Lua state for the debugger
+ *
+ * Only the selected Lua state is visible
+ * in the debugger
+ * */
 int
 pokemon_select(lua_State* L);
 
