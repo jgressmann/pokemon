@@ -3228,8 +3228,8 @@ pokemon_setup(int* argc, char** argv) {
                         break;
                     }
                 }
+                break;
             }
-            break;
         }
         auto error = net_listen(port, 0);
         if (error < 0) {
