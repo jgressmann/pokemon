@@ -87,44 +87,38 @@ static int epoll_loop_set_callback(int handle, epoll_callback_data callback);
 
 #define MinBufferSize  4
 
-
 static pthread_mutex_t s_Lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static pthread_t s_EPollThread;
-static int s_Generation;
 static int s_RefCount;
 static int s_EPollFd = -1;
+static int s_PipeFds[] = { -1, -1 };
 static epoll_callback_data* s_Callbacks;
 static int s_CallbacksSize;
 
 
 static
 void*
-EPollThreadMain(void* arg)
-{
-    int count = 0, bufferSize = 0;
+EPollThreadMain(void* arg) {
+    int count = 0, bufferSize = 0, done = 0;
     struct epoll_event* events = NULL;
 
-    while (1)
-    {
+    while (!done) {
         pthread_mutex_lock(&s_Lock);
-        if (!events)
-        {
-            bufferSize = s_CallbacksSize >= 4 ? s_CallbacksSize : MinBufferSize;
+        if (!events) {
+            bufferSize = s_CallbacksSize >= MinBufferSize ? s_CallbacksSize : MinBufferSize;
             events = (struct epoll_event*)malloc(bufferSize * sizeof(*events));
-        }
-        else if (bufferSize < s_CallbacksSize)
-        {
+            if (!events) goto Exit;
+        } else if (bufferSize < s_CallbacksSize) {
             events = (struct epoll_event*)realloc(events, s_CallbacksSize * sizeof(*events));
+            if (!events) goto Exit;
             bufferSize = s_CallbacksSize;
         }
         pthread_mutex_unlock(&s_Lock);
 
         count = epoll_wait(s_EPollFd, events, bufferSize, -1);
 
-        if (count < 0)
-        {
-            switch (errno)
-            {
+        if (count < 0) {
+            switch (errno) {
             case EINTR:
                 break;
             case EBADF:
@@ -133,21 +127,21 @@ EPollThreadMain(void* arg)
                 fprintf(stderr, "epoll thread received errno %d: %s\n", errno, strerror(errno));
                 goto Exit;
             }
-        }
-        else
-        {
+        } else {
             int i;
 
             pthread_mutex_lock(&s_Lock);
 
-            for (i = 0; i < count; ++i)
-            {
+            for (i = 0; i < count; ++i) {
                 struct epoll_event* ev = &events[i];
 
-                if (ev->data.fd < s_CallbacksSize)
-                {
-                    if (s_Callbacks[ev->data.fd].callback)
-                    {
+                if (ev->data.fd == s_PipeFds[0]) {
+                    done = 1;
+                    break;
+                }
+
+                if (ev->data.fd < s_CallbacksSize) {
+                    if (s_Callbacks[ev->data.fd].callback) {
                         s_Callbacks[ev->data.fd].callback(s_Callbacks[ev->data.fd].ctx, ev);
                     }
                 }
@@ -162,25 +156,30 @@ Exit:
     return NULL;
 }
 
-static
 int
-epoll_loop_create()
-{
+epoll_loop_create() {
     int error = 0;
 
     pthread_mutex_lock(&s_Lock);
 
-    if (++s_RefCount == 1)
-    {
-        ++s_Generation;
+    if (++s_RefCount == 1) {
+        struct epoll_event ev;
 
-        if ((s_EPollFd = epoll_create1(O_CLOEXEC)) < 0)
-        {
+        if ((s_EPollFd = epoll_create1(O_CLOEXEC)) < 0) {
             goto Error;
         }
 
-        if ((error = pthread_create(&s_EPollThread, NULL, EPollThreadMain, NULL)) < 0)
-        {
+        if (pipe2(s_PipeFds, O_CLOEXEC | O_NONBLOCK) < 0) {
+            goto Error;
+        }
+
+        ev.data.fd = s_PipeFds[0];
+        ev.events = EPOLLOUT | EPOLLET;
+        if (epoll_ctl(s_EPollFd, EPOLL_CTL_ADD, ev.data.fd, &ev) < 0) {
+            goto Error;
+        }
+
+        if ((error = pthread_create(&s_EPollThread, NULL, EPollThreadMain, NULL)) < 0) {
             goto Error;
         }
     }
@@ -194,37 +193,28 @@ Exit:
 Error:
     error = errno;
     safe_close_ref(&s_EPollFd);
+    safe_close_ref(&s_PipeFds[0]);
+    safe_close_ref(&s_PipeFds[1]);
     errno = error;
     error = -1;
     goto Exit;
 }
 
-static
 void
-epoll_loop_destroy()
-{
-    int generation;
-
+epoll_loop_destroy() {
     pthread_mutex_lock(&s_Lock);
 
-    generation = ++s_Generation;
-
-    if (--s_RefCount == 0)
-    {
-        safe_close_ref(&s_EPollFd);
-
-        pthread_mutex_unlock(&s_Lock);
+    if (--s_RefCount == 0) {
+        safe_close_ref(&s_PipeFds[0]);
+        safe_close_ref(&s_PipeFds[1]);
 
         pthread_join(s_EPollThread, NULL);
 
-        pthread_mutex_lock(&s_Lock);
+        safe_close_ref(&s_EPollFd);
 
-        if (generation == s_Generation)
-        {
-            free(s_Callbacks);
-            s_Callbacks = NULL;
-            s_CallbacksSize = 0;
-        }
+        free(s_Callbacks);
+        s_Callbacks = NULL;
+        s_CallbacksSize = 0;
     }
 
     pthread_mutex_unlock(&s_Lock);
