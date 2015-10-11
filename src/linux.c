@@ -20,34 +20,24 @@
 
 static
 void
-safe_close(int fd)
-{
-    while (1)
-    {
-        int error = close(fd);
-
-        switch (error)
-        {
-        case EINTR:
-            break;
-        default:
-            return;
-        }
+safe_close(int fd) {
+    int error;
+    while ((error = close(fd)) == -1 && errno == EINTR) {
+        pthread_yield();
     }
 }
 
 static
 void
-safe_close_ref(int* fd)
-{
+safe_close_ref(int* fd) {
     assert(fd);
 
-    if (*fd >= 0)
-    {
+    if (*fd >= 0) {
         safe_close(*fd);
         *fd = -1;
     }
 }
+
 
 /* Callback function type for epoll events */
 typedef void (*epoll_callback_t)(void* ctx, struct epoll_event* ev);
@@ -91,31 +81,33 @@ static pthread_mutex_t s_Lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static pthread_t s_EPollThread;
 static int s_RefCount;
 static int s_EPollFd = -1;
-static int s_PipeFds[] = { -1, -1 };
 static epoll_callback_data* s_Callbacks;
 static int s_CallbacksSize;
-
+static volatile int s_Running = 0;
+static struct epoll_event* s_Events = NULL;
 
 static
 void*
 EPollThreadMain(void* arg) {
-    int count = 0, bufferSize = 0, done = 0;
-    struct epoll_event* events = NULL;
+    const int epollFd = s_EPollFd;
+    int count = 0, bufferSize = 0;
 
-    while (!done) {
+    s_Running = 1;
+
+    for (;;) {
         pthread_mutex_lock(&s_Lock);
-        if (!events) {
+        if (!s_Events) {
             bufferSize = s_CallbacksSize >= MinBufferSize ? s_CallbacksSize : MinBufferSize;
-            events = (struct epoll_event*)malloc(bufferSize * sizeof(*events));
-            if (!events) goto Exit;
+            s_Events = (struct epoll_event*)malloc(bufferSize * sizeof(*s_Events));
+            if (!s_Events) goto Exit;
         } else if (bufferSize < s_CallbacksSize) {
-            events = (struct epoll_event*)realloc(events, s_CallbacksSize * sizeof(*events));
-            if (!events) goto Exit;
+            s_Events = (struct epoll_event*)realloc(s_Events, s_CallbacksSize * sizeof(*s_Events));
+            if (!s_Events) goto Exit;
             bufferSize = s_CallbacksSize;
         }
         pthread_mutex_unlock(&s_Lock);
 
-        count = epoll_wait(s_EPollFd, events, bufferSize, -1);
+        count = epoll_wait(epollFd, s_Events, bufferSize, -1);
 
         if (count < 0) {
             switch (errno) {
@@ -133,12 +125,7 @@ EPollThreadMain(void* arg) {
             pthread_mutex_lock(&s_Lock);
 
             for (i = 0; i < count; ++i) {
-                struct epoll_event* ev = &events[i];
-
-                if (ev->data.fd == s_PipeFds[0]) {
-                    done = 1;
-                    break;
-                }
+                struct epoll_event* ev = &s_Events[i];
 
                 if (ev->data.fd < s_CallbacksSize) {
                     if (s_Callbacks[ev->data.fd].callback) {
@@ -152,7 +139,8 @@ EPollThreadMain(void* arg) {
     }
 
 Exit:
-    free(events);
+    s_Running = 0;
+
     return NULL;
 }
 
@@ -163,24 +151,22 @@ epoll_loop_create() {
     pthread_mutex_lock(&s_Lock);
 
     if (++s_RefCount == 1) {
-        struct epoll_event ev;
+        s_EPollFd = -1;
+        s_Callbacks = NULL;
+        s_CallbacksSize = 0;
+        s_Events = NULL;
+        s_Running = 0;
 
         if ((s_EPollFd = epoll_create1(O_CLOEXEC)) < 0) {
             goto Error;
         }
 
-        if (pipe2(s_PipeFds, O_CLOEXEC | O_NONBLOCK) < 0) {
-            goto Error;
-        }
-
-        ev.data.fd = s_PipeFds[0];
-        ev.events = EPOLLOUT | EPOLLET;
-        if (epoll_ctl(s_EPollFd, EPOLL_CTL_ADD, ev.data.fd, &ev) < 0) {
-            goto Error;
-        }
-
         if ((error = pthread_create(&s_EPollThread, NULL, EPollThreadMain, NULL)) < 0) {
             goto Error;
+        }
+
+        while (!s_Running) {
+            pthread_yield();
         }
     }
 
@@ -193,8 +179,6 @@ Exit:
 Error:
     error = errno;
     safe_close_ref(&s_EPollFd);
-    safe_close_ref(&s_PipeFds[0]);
-    safe_close_ref(&s_PipeFds[1]);
     errno = error;
     error = -1;
     goto Exit;
@@ -205,19 +189,21 @@ epoll_loop_destroy() {
     pthread_mutex_lock(&s_Lock);
 
     if (--s_RefCount == 0) {
-        safe_close_ref(&s_PipeFds[0]);
-        safe_close_ref(&s_PipeFds[1]);
+        const int epollFd = s_EPollFd;
+        struct epoll_event* events = s_Events;
+        epoll_callback_data* callbacks = s_Callbacks;
+        pthread_t thread = s_EPollThread;
 
-        pthread_join(s_EPollThread, NULL);
+        pthread_mutex_unlock(&s_Lock);
+        pthread_cancel(thread);
+        pthread_join(thread, NULL);
 
-        safe_close_ref(&s_EPollFd);
-
-        free(s_Callbacks);
-        s_Callbacks = NULL;
-        s_CallbacksSize = 0;
+        safe_close(epollFd);
+        free(events);
+        free(callbacks);
+    } else {
+        pthread_mutex_unlock(&s_Lock);
     }
-
-    pthread_mutex_unlock(&s_Lock);
 }
 
 static
