@@ -29,7 +29,7 @@ set(LIBPOKEMONSRC
 
 
 
-# Set this to 1 to print messages sent to /received from QtCreator
+# Set this to 1 to print messages sent to/received from QtCreator
 # to stderr
 add_definitions(-DPOKEMON_DEBUG_MESSAGES=0)
 
@@ -37,11 +37,12 @@ add_definitions(-DPOKEMON_DEBUG_MESSAGES=0)
 #add_definitions(-DPOKEMON_NDEBUG)
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
-    pkg_check_modules(LUA51 REQUIRED lua5.1)
-    set(LUA_INCLUDE_DIRS ${LUA51_INCLUDE_DIRS})
-    set(LUA_LIBRARIES ${LUA51_LIBRARIES})
-    #set(LUA_INCLUDE_DIRS /home/jean/lua-5.2.4/src)
-    #set(LUA_LIBRARIES /home/jean/lua-5.2/lib/liblua.a -ldl)
+    if("${POKEMON_LUA_INCLUDE_DIRS}" STREQUAL "" AND "${POKEMON_LUA_LIBRARIES}" STREQUAL "")
+        pkg_check_modules(LUA51 REQUIRED lua5.1)
+        set(POKEMON_LUA_INCLUDE_DIRS ${LUA51_INCLUDE_DIRS})
+        set(POKEMON_LUA_LIBRARIES ${LUA51_LIBRARIES})
+    endif()
+
     execute_process(COMMAND uname -a OUTPUT_VARIABLE ARCH)
     add_definitions(
         -D_GNU_SOURCE
@@ -51,16 +52,24 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
 
     if(CMAKE_COMPILER_IS_GNUCXX)
         if(M64)
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
-            set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m64")
             if("${ARCH}" MATCHES "x86_64")
+                message(STATUS "x86_64")
+                set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
+                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m64")
                 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcx16")
                 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcx16")
             endif()
         else()
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32")
-            set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
+            if("${ARCH}" MATCHES "i686" OR "${ARCH}" MATCHES "i586")
+                message(STATUS "x86")
+                set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32")
+                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
+            elseif("${ARCH}" MATCHES "armv6l")
+                #raspberry pi
+                message(STATUS "armv6l")
+            endif()
         endif()
+
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
         set(CMAKE_LD_FLAGS "${CMAKE_LD_FLAGS} -pthread")
@@ -82,8 +91,8 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
 endif()
 
 add_library(pokemon STATIC ${LIBPOKEMONSRC})
-target_link_libraries(pokemon ${LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
-target_include_directories(pokemon PUBLIC ${LUA_INCLUDE_DIRS})
+target_link_libraries(pokemon ${POKEMON_LUA_LIBRARIES} ${POKEMON_EXTRA_LIBS})
+target_include_directories(pokemon PUBLIC ${POKEMON_LUA_INCLUDE_DIRS})
 
 if(POKEMON_EXAMPLE)
     add_executable(pokemon-example example.cpp)
