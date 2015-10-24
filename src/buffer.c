@@ -30,30 +30,66 @@
 #include <string.h>
 #include <stdio.h>
 
+
+
 #if defined(_WIN64) || defined(_WIN32)
 #   include <windows.h>
 #   include <inttypes.h>
 #   define membar() MemoryBarrier()
 #   define INLINE __forceinline
 #   if defined(_WIN64)
-#       define cas(ptr, new, old) InterlockedCompareExchange128((LONGLONG volatile *)ptr, (*((LONGLONG*)new) >> 64, *((LONGLONG*)new), (LONGLONG*)old)
+#       define cas2(ptr, new, old) InterlockedCompareExchange128((LONGLONG volatile *)ptr, (*((LONGLONG*)new) >> 64, *((LONGLONG*)new), (LONGLONG*)old)
 #   else
-#       define cas(ptr, new, old) (InterlockedCompareExchange64((LONGLONG volatile *)ptr, *((LONGLONG*)new), *((LONGLONG*)old)) == *((LONGLONG*)old))
+#       define cas2(ptr, new, old) (InterlockedCompareExchange64((LONGLONG volatile *)ptr, *((LONGLONG*)new), *((LONGLONG*)old)) == *((LONGLONG*)old))
 #   endif
+#   define cas1(ptr, new, old) InterlockedCompareExchange((LONG volatile *)ptr, *((LONG*)old), *((LONG*)new))
+#   define yield() Sleep(0)
 #elif defined(__GNUC__)
+#   include <pthread.h>
 #   define membar() __sync_synchronize()
 #   define INLINE inline
 #   if __WORDSIZE == 32
-#       define cas(ptr, new, old) __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
+#       define cas2(ptr, new, old) __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
 #   else
-#       define cas(ptr, new, old) __sync_bool_compare_and_swap((__int128*)ptr, *((__int128_t*)old), *((__int128_t*)new))
+#       define cas2(ptr, new, old) __sync_bool_compare_and_swap((__int128*)ptr, *((__int128_t*)old), *((__int128_t*)new))
 #   endif
+#   define cas1(ptr, new, old) __sync_bool_compare_and_swap((__int32_t*)ptr, *((__int32_t*)old), *((__int32_t*)new))
+#   define yield() pthread_yield()
+#endif
+
+
+#ifdef SINGLECORE
+#   undef membar
+#   define membar()
+#   undef cas2
+#   define cas2  Cas
+static volatile int s_Lock;
+static
+int
+Cas(aba_ptr volatile * ptr, aba_ptr* new, aba_ptr* old) {
+    int result, one = 1, zero = 0;
+    while (!cas1(&s_Lock, &one, &zero)) {
+        yield();
+    }
+
+    if ((result = ((ptr->Ptr == old->Ptr) & (ptr->Aba == old->Aba)))) {
+        *ptr = *new;
+    }
+
+    s_Lock = 0;
+
+    return result;
+}
 #endif
 
 /* assert sizeof aba_ptr == 2 * sizeof(void*) */
 typedef char AssertSizeofAbaPtrEqualsTwiceSizeofVoidStar[sizeof(aba_ptr) == 2 * sizeof(void*) ? 1 : -1];
 
 static aba_ptr s_Stack;
+#define DEFAULT_MIN_SIZE 64
+static size_t s_MinSize = DEFAULT_MIN_SIZE;
+static size_t s_Limit = 0;
+static volatile size_t s_Use = 0;
 
 static
 void
@@ -73,7 +109,7 @@ Push(buffer* node) {
 
         newHead.Aba = oldHead.Aba + 1;
         newHead.Ptr = node;
-    } while (!cas(head, &newHead, &oldHead));
+    } while (!cas2(head, &newHead, &oldHead));
 }
 
 static
@@ -97,20 +133,9 @@ Pop() {
 
         newHead.Aba = oldHead.Aba + 1;
         newHead.Ptr = result->next.Ptr;
-    } while (!cas(head, &newHead, &oldHead));
+    } while (!cas2(head, &newHead, &oldHead));
 
     return result;
-}
-
-
-static
-void
-Teardown(void) {
-    buffer* buf = NULL;
-    while ((buf = Pop()) != NULL) {
-        free(buf->beg);
-        free(buf);
-    }
 }
 
 static
@@ -120,11 +145,23 @@ Max(size_t lhs, size_t rhs) {
     return lhs < rhs ? rhs : lhs;
 }
 
+static
+size_t
+AtomicAdd(size_t volatile * counter, intptr_t value) {
+    size_t old, new;
+    do {
+        old = *counter;
+        new = old + value;
+    } while (!cas1(counter, &new, &old));
+
+    return new;
+}
+
 #if defined(__GNUC__)
 __attribute__((constructor))
 #endif
 static void Setup() {
-   atexit(Teardown);
+   atexit(buf_clear_cache);
 }
 
 extern
@@ -140,7 +177,10 @@ buf_alloc(size_t bytes) {
         memset(buf, 0, sizeof(*buf));
     }
 
+    AtomicAdd(&s_Use, -(intptr_t)buf_size(buf));
+
     if (!buf_resize(buf, bytes)) {
+        AtomicAdd(&s_Use, (intptr_t)buf_size(buf));
         Push(buf);
         return NULL;
     }
@@ -159,7 +199,7 @@ buf_grow(buffer* buf, size_t bytes) {
 
     oldUsed = buf_used(buf);
     oldSize = buf_size(buf);
-    newSize = Max((oldSize * 168) / 100, Max(bytes, sizeof(void*)));
+    newSize = Max((oldSize * 168) / 100, Max(bytes, s_MinSize));
     buf->beg = realloc(buf->beg, newSize);
     if (!buf->beg) {
         buf->cap = NULL;
@@ -181,9 +221,38 @@ buf_free(buffer* buf)
 
     //fprintf(stderr, "in  %p %p\n", buf, buf->cap);
 
-    buf_clear(buf);
+    if (s_Limit && s_Use >= s_Limit) {
+        free(buf->beg);
+        buf->beg = NULL;
+        buf->end = NULL;
+        buf->cap = NULL;
+    } else {
+        buf_clear(buf);
+        AtomicAdd(&s_Use, (intptr_t)buf_size(buf));
+    }
 
     Push(buf);
 }
 
+extern
+void
+buf_set_min_size(size_t bytes) {
+    s_MinSize = bytes ? bytes : DEFAULT_MIN_SIZE;
+}
 
+extern
+void
+buf_set_cache_limit(size_t bytes) {
+    s_Limit = bytes;
+}
+
+void
+buf_clear_cache() {
+    buffer* buf = NULL;
+    while ((buf = Pop()) != NULL) {
+        free(buf->beg);
+        free(buf);
+    }
+
+    s_Use = 0;
+}

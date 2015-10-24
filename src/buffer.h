@@ -20,21 +20,37 @@
 extern "C" {
 #endif
 
-typedef ALIGN(2 * sizeof(void*)) struct
-{
+typedef ALIGN(2 * sizeof(void*)) struct {
     void* Ptr;
     uintptr_t Aba;
-}
-aba_ptr;
+} aba_ptr;
 
-typedef struct
-{
+typedef struct {
     aba_ptr next;
     unsigned char* beg;
     unsigned char* end;
     unsigned char* cap;
-}
-buffer;
+} buffer;
+
+/* Sets the minium buffer size.
+ *
+ * Default minimum size is 64 bytes (1 cache line)
+ *
+ * Param bytes: minimum size in bytes.
+ *  A value of 0 sets the default size.
+ */
+void
+buf_set_min_size(size_t bytes);
+
+/* Sets the size in bytes to which the buffer cache can grow.
+ *
+ * Defaults to 0 which is unlimited.
+ *
+ * Param bytes: size in bytes of the cache
+ *  A value of 0 sets unlimited caching.
+ */
+void
+buf_set_cache_limit(size_t bytes);
 
 /* Creates a buffer of the given size.
  *
@@ -51,9 +67,17 @@ buf_alloc(size_t bytes);
 int
 buf_grow(buffer* buf, size_t bytes);
 
-/* Destroyes the buffer */
+/* Returns the buffer to the cache */
 void
 buf_free(buffer* buf);
+
+/* Clears the buffer cache
+ *
+ * NOTE: Use this with extreme caution if your program is multithreaded!
+ * NOTE: You *may* get random crashs. You have been warned.
+ */
+void
+buf_clear_cache();
 
 /* Evaluates to the capacity of a buffer */
 #define buf_size(buf) ((size_t)((buf)->cap - (buf)->beg))
