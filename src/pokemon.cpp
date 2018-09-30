@@ -510,7 +510,7 @@ private:
 /// LuaValue
 ////////////////////////////////////////////////////////////////////////////////
 LuaValue::~LuaValue() {
-    if (LUA_TSTRING == (int)Type) {
+    if (LUA_TSTRING == Type) {
         buf_free(Data.String);
     }
 }
