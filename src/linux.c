@@ -17,13 +17,14 @@
 #include <sys/epoll.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <sched.h>
 
 static
 void
 safe_close(int fd) {
     int error;
     while ((error = close(fd)) == -1 && errno == EINTR) {
-        pthread_yield();
+        sched_yield();
     }
 }
 
@@ -77,7 +78,7 @@ static int epoll_loop_set_callback(int handle, epoll_callback_data callback);
 
 #define MinBufferSize  4
 
-static pthread_mutex_t s_Lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static pthread_mutex_t s_Lock;
 static pthread_t s_EPollThread;
 static int s_RefCount;
 static int s_EPollFd = -1;
@@ -166,7 +167,7 @@ epoll_loop_create() {
         }
 
         while (!s_Running) {
-            pthread_yield();
+            sched_yield();
         }
     }
 
@@ -262,6 +263,45 @@ int
 epoll_loop_get_fd()
 {
     return s_EPollFd;
+}
+
+
+static
+int
+epoll_loop_init(void)
+{
+    pthread_mutexattr_t attr;
+    int error = pthread_mutexattr_init(&attr);
+
+    if (error) {
+        errno = error;
+        return -1;
+    }
+
+    error = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+
+    if (error) {
+        errno = error;
+        return -1;
+    }
+
+    error = pthread_mutex_init(&s_Lock, &attr);
+
+    pthread_mutexattr_destroy(&attr);
+
+    if (error) {
+        errno = error;
+        return -1;
+    }
+
+    return 0;
+}
+
+static
+void
+epoll_loop_uninit(void)
+{
+    pthread_mutex_destroy(&s_Lock);
 }
 
 
@@ -376,6 +416,7 @@ net_listen(int p, int flags)
     int fd = -1;
     int on = 1;
     int i = 0;
+    int epoll_loop_initialized = 0;
     char port[6];
     struct addrinfo hints;
     struct addrinfo * info = NULL;
@@ -385,6 +426,12 @@ net_listen(int p, int flags)
     memset(&hints, 0, sizeof(hints));
     memset(&ev, 0, sizeof(ev));
     memset(&ecd, 0, sizeof(ecd));
+
+    if (epoll_loop_init()) {
+        goto Out;
+    }
+
+    epoll_loop_initialized = 1;
 
     error = epoll_loop_create();
     if (error < 0)
@@ -469,6 +516,7 @@ Exit:
     if (fd >= 0) safe_close(fd);
 Out:
     if (info) freeaddrinfo(info);
+    if (epoll_loop_initialized) epoll_loop_uninit();
     return error;
 }
 
@@ -502,6 +550,8 @@ net_hangup()
         net_close();
 
         epoll_loop_destroy();
+
+        pthread_mutex_destroy(&s_Lock);
     }
 
     return 0;

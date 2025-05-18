@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <sched.h>
 
 
 
@@ -45,16 +46,17 @@
 #   define cas1(ptr, new, old) InterlockedCompareExchange((LONG volatile *)ptr, *((LONG*)old), *((LONG*)new))
 #   define yield() Sleep(0)
 #elif defined(__GNUC__)
-#   include <pthread.h>
+#   include <sched.h>
+#   include <stdint.h>
 #   define membar() __sync_synchronize()
 #   define INLINE inline
 #   if __WORDSIZE == 32
-#       define cas2(ptr, new, old) __sync_bool_compare_and_swap((__int64_t*)ptr, *((__int64_t*)old), *((__int64_t*)new))
+#       define cas2(ptr, new, old) __sync_bool_compare_and_swap((int64_t*)ptr, *((int64_t*)old), *((int64_t*)new))
 #   else
 #       define cas2(ptr, new, old) __sync_bool_compare_and_swap((__int128*)ptr, *((__int128_t*)old), *((__int128_t*)new))
 #   endif
-#   define cas1(ptr, new, old) __sync_bool_compare_and_swap((__int32_t*)ptr, *((__int32_t*)old), *((__int32_t*)new))
-#   define yield() pthread_yield()
+#   define cas1(ptr, new, old) __sync_bool_compare_and_swap((int32_t*)ptr, *((int32_t*)old), *((int32_t*)new))
+#   define yield() sched_yield()
 #endif
 
 

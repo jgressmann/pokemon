@@ -30,6 +30,7 @@ extern "C" {
 #include <algorithm>
 #include <cstdarg>
 #include <memory>
+#include <string>
 
 #ifdef POKEMON_LINUX
 #   include <arpa/inet.h>
