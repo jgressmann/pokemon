@@ -3196,6 +3196,7 @@ extern "C"
 int
 pokemon_setup(int* argc, char** argv) {
     std::lock_guard<std::mutex> g(s_Lock);
+    platform_init();
     if (!s_Pokemon) {
         s_Pokemon.reset(new Pokemon());
     }
@@ -3260,6 +3261,7 @@ pokemon_teardown()
         ReleaseReceiveData();
         s_Pokemon.reset();
     }
+    platform_uninit();
 }
 
 extern "C"

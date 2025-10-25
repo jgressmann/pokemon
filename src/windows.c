@@ -3,6 +3,16 @@
 #include <WinSock2.h>
 #include <Windows.h>
 
+int platform_init(void)
+{
+    return 0;
+}
+
+void platform_uninit(void)
+{
+
+}
+
 int
 net_listen(int port, int flags) {
     return 0;

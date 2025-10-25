@@ -16,6 +16,9 @@ extern "C" {
 #define NET_EVENT_CONNECT 8
 typedef void (*net_callback)(void* ctx, int events);
 
+int platform_init(void);
+void platform_uninit(void);
+
 int net_listen(int port, int flags);
 void net_close();
 int net_hangup();

@@ -86,6 +86,29 @@ static epoll_callback_data* s_Callbacks;
 static int s_CallbacksSize;
 static volatile int s_Running = 0;
 static struct epoll_event* s_Events = NULL;
+static int s_InitializationCount = 0;
+
+int platform_init(void)
+{
+    if (0 == s_InitializationCount++) {
+        pthread_mutexattr_t attr;
+
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        if (pthread_mutex_init(&s_Lock, &attr)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void platform_uninit(void)
+{
+    if (0 == --s_InitializationCount) {
+        pthread_mutex_destroy(&s_Lock);
+    }
+}
 
 static
 void*
